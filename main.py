@@ -3,10 +3,12 @@ from typing import final
 import gurobipy as gp
 from gurobipy import GRB
 import math
+import scipy
 
-nrOfVars = 20
+nrOfVars = 250
 dimension = 5
 distanceForbidden = 0
+jacobiType = "new"
 
 def gammaFunction(nVar):
     if nVar % 0.5 != 0 or nVar <= 0:
@@ -23,6 +25,8 @@ def gammaFunction(nVar):
 
 
 def jacobiValue(degree, alphaJac, betaJac, location):
+    if degree == 0:
+        return 1
     if location == 1:
         return gammaFunction(alphaJac + degree + 1)/(gammaFunction(degree + 1)*gammaFunction(alphaJac + 1))
     finalValue = gammaFunction(alphaJac + degree + 1)
@@ -34,8 +38,13 @@ def jacobiValue(degree, alphaJac, betaJac, location):
     return finalValue
 
 def normedJacobiValue(degree, alpha, beta, location):
-    return jacobiValue(degree, alpha, beta, location)/jacobiValue(degree, alpha, beta, 1)
-
+    if location == 0:
+        functDegree = 2*degree
+    else:
+        functDegree = degree
+    if jacobiType == "old":
+        return jacobiValue(functDegree, alpha, beta, location)/jacobiValue(functDegree, alpha, beta, 1)
+    return scipy.special.eval_jacobi(functDegree, alpha, beta, location)/scipy.special.eval_jacobi(functDegree, alpha, beta, 1)
 
 def makeModel(name):
     m = gp.Model(f"3.11 implementation")
@@ -50,17 +59,24 @@ def makeModel(name):
     fList = m.addVars(nrOfVars, vtype=GRB.CONTINUOUS, lb=0, name="clusterWeights")
     sphereMeasure = 2*(math.pi**(dimension/2)/gammaFunction(dimension/2))
     jacobiList = [normedJacobiValue(jacobiIter, alpha, alpha, distanceForbidden) for jacobiIter in range(nrOfVars)]
-    m.addConstr((gp.quicksum((fList[fIter] * jacobiList[fIter])
-                                              for fIter in range(nrOfVars)) == 0),
-                                                    name=f"Jacobi Constraint")
+    # m.addConstr((gp.quicksum((fList[fIter] * jacobiList[fIter])
+    #                                           for fIter in range(nrOfVars)) == 0),
+    #                                                 name=f"Jacobi Constraint")
+    m.addConstr(gp.quicksum(fList[fIter] * jacobiList[fIter] for fIter in range(nrOfVars)) <= 0,
+                name="Jacobi_ConstraintS")
+    m.addConstr(gp.quicksum(fList[fIter] * jacobiList[fIter] for fIter in range(nrOfVars)) >= 0,
+                name="Jacobi_ConstraintL")
+
     m.addConstr((gp.quicksum(fList[fIter]
-                             for fIter in range(nrOfVars)) == 1/sphereMeasure),
+                             for fIter in range(nrOfVars)) == 1),
                 name=f"Measure Constraint")
 
     objective = (sphereMeasure**2 * fList[0])
-    m.setObjective(objective, GRB.MAXIMIZE)
+    m.setObjective(sphereMeasure * fList[0], GRB.MAXIMIZE)
     m.update()
     m.optimize()
+    print(m.ObjVal/sphereMeasure)
+
     # for slIdx in range(nrOfSls):
     #     slindices, slvalues = getRow(aST, slIdx)
     #     rowSize = len(slindices)
