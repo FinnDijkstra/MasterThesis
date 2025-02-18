@@ -6,7 +6,7 @@ import math
 import scipy
 
 nrOfVars = 10
-dimension = 5
+dimension = 6
 distanceForbidden = 0
 jacobiType = "new"
 
@@ -141,12 +141,67 @@ def makeModelv2(alpha, beta, newForbidden):
 
 
 
+def makeModelCascading(alpha, oldForbidden, newForbidden):
+    m = gp.Model(f"Gen Theta implementation")
+    m.setParam("OutputFlag", 1)
+    # m.setParam(GRB.Param.Presolve, 0)
+    m.setParam(GRB.Param.DisplayInterval, 10)
+    # m.setParam(GRB.Param.Method, 2)
+    # m.setParam("ConcurrentMethod", 2)
+    # m.setParam(GRB.Param.BarIterLimit, 0)
+
+    # alpha = (dimension-3.0)/2.0
+    fList = m.addVars(nrOfVars, vtype=GRB.CONTINUOUS, lb=0, name="clusterWeights")
+    sphereMeasure = 2*(math.pi**(dimension/2)/gammaFunction(dimension/2))
+    jacobiMaster = [[] for _ in range(nrOfVars)]
+    radZ = abs(oldForbidden)
+    if radZ == 0:
+        angleZ = 1
+    else:
+        angleZ = oldForbidden / radZ
+    for totDegree in range(nrOfVars):
+        for mDegree in range(totDegree+1):
+            nDegree = totDegree - mDegree
+            jacobiStep1 = normedJacobiValue(min(mDegree,nDegree), alpha, abs(mDegree-nDegree), newForbidden)
+            curRad = radZ**(abs(mDegree-nDegree))
+            curAngle = angleZ**(mDegree-nDegree)
+            jacobiMaster[totDegree].append(curRad*curAngle*jacobiStep1)
+
+    jacobiList = [normedJacobiValue(jacobiIter, alpha, 0, newForbidden) for jacobiIter in range(nrOfVars)]
+    # m.addConstr((gp.quicksum((fList[fIter] * jacobiList[fIter])
+    #                                           for fIter in range(nrOfVars)) == 0),
+    #                                                 name=f"Jacobi Constraint")
+    m.addConstr(gp.quicksum(fList[fIter] * jacobiList[fIter] for fIter in range(nrOfVars)) <= 0,
+                name="Jacobi_ConstraintS")
+    m.addConstr(gp.quicksum(fList[fIter] * jacobiList[fIter] for fIter in range(nrOfVars)) >= 0,
+                name="Jacobi_ConstraintL")
+
+    m.addConstr((gp.quicksum(fList[fIter]
+                             for fIter in range(nrOfVars)) == 1),
+                name=f"Measure Constraint")
+
+    # objective = (sphereMeasure**2 * fList[0])
+    m.setObjective(fList[0], GRB.MAXIMIZE)
+    m.update()
+    m.optimize()
+    print(m.ObjVal)
+
+
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     makeModel("yes")
-    newCalcForbiddenDistance = math.sqrt((distanceForbidden+1)/2)
+
     newCalcForbiddenDistancev2 = 2*(distanceForbidden) - 1
     makeModelv2((dimension-3.0)/2.0, -1/2, newCalcForbiddenDistancev2)
+    # Complex RP
+
+    makeModelv2((dimension - 2.0), 0, newCalcForbiddenDistancev2)
+    # Complex Sphere
+
+
+    makeModelv2((dimension - 2.0), (dimension - 2.0), distanceForbidden)
+    makeModelCascading(dimension-2.0, distanceForbidden, newCalcForbiddenDistancev2)
 
 
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/
