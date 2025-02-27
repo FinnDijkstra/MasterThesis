@@ -47,6 +47,11 @@ def normedJacobiValue(degree, alpha, beta, location):
         return jacobiValue(functDegree, alpha, beta, location)/jacobiValue(functDegree, alpha, beta, 1)
     return scipy.special.eval_jacobi(functDegree, alpha, beta, location)/scipy.special.eval_jacobi(functDegree, alpha, beta, 1)
 
+
+def realDiskPoly(alpha, gamma, k, radius, angle):
+    return (radius**gamma)*math.cos(gamma*angle)*normedJacobiValue(k, alpha, gamma, 2*(radius**2)-1)
+
+
 def makeModel(name):
     m = gp.Model(f"3.11 implementation")
     m.setParam("OutputFlag", 1)
@@ -192,7 +197,7 @@ def makeModelCascading(alpha, oldForbidden, newForbidden):
 if __name__ == '__main__':
     makeModel("yes")
 
-    newCalcForbiddenDistancev2 = 2*(distanceForbidden) - 1
+    newCalcForbiddenDistancev2 = 2*(distanceForbidden**2) - 1
     makeModelv2((dimension-3.0)/2.0, -1/2, newCalcForbiddenDistancev2)
     # Complex RP
 
