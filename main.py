@@ -10,7 +10,7 @@ from line_profiler import LineProfiler
 
 nrOfVars = 10
 nrOfTests = 200
-dimension = 5
+dimension = 12
 distanceForbidden = 0
 jacobiType = "new"
 
@@ -51,10 +51,7 @@ def normedJacobiValue(degree, alpha, beta, location):
     #     functDegree = degree
     if degree == 0 or location == 1:
         return 1
-    functDegree = degree
-    if jacobiType == "old":
-        return jacobiValue(functDegree, alpha, beta, location)/jacobiValue(functDegree, alpha, beta, 1)
-    return scipy.special.eval_jacobi(functDegree, alpha, beta, location)/scipy.special.eval_jacobi(functDegree, alpha, beta, 1)
+    return scipy.special.eval_jacobi(degree, alpha, beta, location)/scipy.special.eval_jacobi(degree, alpha, beta, 1)
 
 
 def realDiskPoly(alpha, gamma, k, radius, angle):
@@ -327,6 +324,7 @@ def tierListPrinter(Dictionary, nrPrinted=0):
 
 
 if __name__ == '__main__':
+    makeModelv2((dimension-3.0)/2.0, (dimension-3.0)/2.0, 0)
     denomList = list(range(1,256))
     nonSimpleSolutions = {}
     fixedMaxTime = 0
