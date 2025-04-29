@@ -5,6 +5,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
+from scipy.integrate import quad
 from matplotlib import cm
 labelDict = {"RadAng":["Radius","Angle", "Result (log of -thetapart)"], "RadGamma":["Radius","Gamma", "Result"],
              "JacobiSol":["Innerproduct","Height", "Result"]}
@@ -14,6 +15,120 @@ dimension = 4
 minGamma = 5
 maxGamma = 15
 maxDegree = 10
+
+
+def compute_denominator(n, c=1 / np.sqrt(2)):
+    """Compute the denominator D analytically."""
+
+    def denom_integrand(x):
+        return (1 - x ** 2) ** ((n - 3) / 2)
+
+    D, _ = quad(denom_integrand, c, 1.0)
+    return 2.0 * D
+
+def bestCaseInnerproduct(x,y):
+    return
+
+
+def cap_fraction_grid(t_array, n, u1_points=200, u2_points=200):
+    """
+    Approximate cap_fraction for multiple t values using a fixed 2D grid.
+
+    Parameters
+    ----------
+    t_array : array-like of floats
+        Inner products at which to evaluate.
+    n : int
+        Dimension ≥ 2.
+    u1_points : int
+        Number of grid points for u1 in [-1,1].
+    u2_points : int
+        Number of grid points for u2 in [-1,1].
+
+    Returns
+    -------
+    numpy.ndarray
+        Approximate fractions for each t in t_array.
+    """
+    t_array = np.atleast_1d(t_array)
+    c = 1.0 / np.sqrt(2.0)
+
+    # Create uniform grids
+    # make a grid for the poles (cos(thet), sin(thet), 0, 0,...)
+    perspectivePoleInnerGrid = np.linspace(-1, 1, u1_points)
+    sinPPIG = np.sin(np.arccos(perspectivePoleInnerGrid))
+    # the weight of the group with (cos(thet),.....)
+    pPIGWeight = np.abs(np.sin(np.arccos(perspectivePoleInnerGrid))) ** (n - 3)
+
+    # Make a grid for the cos of the remainder of w with innerproduct t to v wrt (0,1,0,0,0,...) and its weight
+    doubleProjectiveGridTheta = np.linspace(0, 2 * math.pi, u2_points)
+    cosDPGT = np.cos(doubleProjectiveGridTheta)
+    sinDPGT = np.abs(np.sin(doubleProjectiveGridTheta))
+    dPGTWeight = sinDPGT**(n-3)
+    # dPGTWeight = ((doubleProjectiveGridTheta / math.pi) ** (((dimension - 3)/ 2) ) *
+    #               (1 - doubleProjectiveGridTheta / math.pi) ** (((dimension - 3)/ 2) ))
+    dPGTTotWeight = np.sum(dPGTWeight)
+
+
+    # Create mask if cap wrt pole is on v
+    maskCap = (np.abs(perspectivePoleInnerGrid) > math.sqrt(1/2))
+    pPIGTotWeight = np.sum(pPIGWeight[maskCap])/2
+    # Create mask if cap wrt pole has atleast 1 point that has innerproduct t
+    term1 = np.abs(t_array[:, None] * perspectivePoleInnerGrid[None, :])
+    term2 = np.sqrt(1 - t_array[:, None] ** 2) * np.sqrt(1 - perspectivePoleInnerGrid[None, :] ** 2)
+    maskTCap = ((term1 + term2) > math.sqrt(1/2))
+    maskTot = maskTCap * maskCap
+
+    # For each t, for each cap, test if each cosine of a point (with innerproduct t) wrt e_2 is in the cap and add its
+    # weight if that is the case
+    outputTVol = np.zeros_like(t_array)
+    for tIDX in range(t_array.shape[0]):
+        t = t_array[tIDX]
+        tOrth = math.sqrt(1-t**2)
+        curTDensity = np.zeros(u1_points)
+        for pole in range(u1_points):
+            if maskCap[pole] & maskTCap[tIDX,pole]:
+                poleInner = perspectivePoleInnerGrid[pole]
+                poleOrth = sinPPIG[pole]
+                innerFactor = t*poleInner
+                OrthFactor = tOrth * poleOrth
+                OrthComp = OrthFactor * cosDPGT
+                innerPT = OrthComp + innerFactor
+                capTAngMask = (innerPT > math.sqrt(1/2))
+                curTDensity[pole] = np.sum(dPGTWeight[capTAngMask])/dPGTTotWeight
+        outputTVol[tIDX] = np.inner(curTDensity, pPIGWeight)/pPIGTotWeight
+
+
+    # u1 = np.linspace(-1, 1, u1_points)
+    # u2 = np.linspace(-1, 1, u2_points)
+    # du1 = u1[1] - u1[0]
+    # du2 = u2[1] - u2[0]
+    #
+    # U1, U2 = np.meshgrid(u1, u2, indexing='ij')
+    # mask_sphere_cap = (U1 ** 2 + U2 ** 2 <= 1.0) & (np.abs(U1) >= c)
+    # mask_sphere_over = (U1 ** 2 + U2 ** 2 > 1.0) & (np.abs(U1) >= c)
+    # mask_sphere = np.logical_or(mask_sphere_cap,mask_sphere_over)
+    # # Precompute integrand on grid
+    # integrand = np.zeros_like(U1)
+    # integrand[mask_sphere_cap] = (1 - U1[mask_sphere_cap] ** 2 - U2[mask_sphere_cap] ** 2) ** ((n - 3) / 2)
+    # integrand[mask_sphere_over] = (-1 + U1[mask_sphere_over] ** 2 + U2[mask_sphere_over] ** 2) ** ((n - 3) / 2)
+    # # Compute denominator
+    # D = compute_denominator(n, c)
+    # # Calculate fractions for each t
+    # fractions = []
+    # for t in t_array:
+    #     if abs(abs(t) - 1.0) < 1e-8:
+    #         fractions.append(1.0)
+    #         continue
+    #     sqrt1mt2 = np.sqrt(1 - t ** 2)
+    #     # Condition for inner product with second pole
+    #     mask2 = np.abs(t * U1 + sqrt1mt2 * U2) >= c
+    #     N = np.sum(integrand * (mask2 & mask_sphere)) * du1 * du2
+    #     fractions.append(N / D)
+
+    return outputTVol
+
+
 
 def leftCalculator(k,beta,alpha):
     return math.comb(k+beta, k)/math.comb(k+alpha, k)
@@ -99,12 +214,13 @@ if "Rad" in testType:
         plt.show()
 
 if testType == "JacobiSol":
-    radialBool = True
+    radialBool = False
     cosineBool = True
+    definitionPoints = 250
     vfunc = np.vectorize(main.normedJacobiValue, otypes=[float])
     if radialBool:
 
-        thetaSpace = np.linspace(0, math.pi, num=2000)
+        thetaSpace = np.linspace(0, math.pi, num=definitionPoints)
         innerProductTheta = np.cos(thetaSpace)
 
 
@@ -189,7 +305,8 @@ if testType == "JacobiSol":
         plt.show()
     if cosineBool:
         bucketNr = 20
-        r = np.linspace(-1, 1, num=2000)
+
+        r = np.linspace(-1, 1, num=definitionPoints)
         theta = np.arccos(r)
         a = np.empty(bucketNr + 1)
         for i in range(bucketNr + 1):
@@ -231,10 +348,13 @@ if testType == "JacobiSol":
         volumeDensity = weightMeasure * jacobiSol
         volumetwo = np.zeros_like(volumeDensity)
         doublecap = np.zeros_like(r)
+        # interSectFunc = np.vectorize(cap_fraction)
+        invariantDoubleCap = cap_fraction_grid(t_array=r, n=dimension, u1_points=2*definitionPoints, u2_points=2*definitionPoints)
         for i in range(doublecap.shape[0]):
             if abs(r[i]) > math.sqrt(2) / 2:
                 doublecap[i] = 1
         doubleCapDensity = doublecap * weightMeasure
+        invDCDensity = invariantDoubleCap * weightMeasure
         # for i in range(volumetwo.shape[0]//2):
         #     if i == 0:
         #         volumetwo[i] = volumeDensity[i]
@@ -245,21 +365,24 @@ if testType == "JacobiSol":
         # volumetwo = volumetwo/volumetwo.shape[0]
         volume = np.zeros_like(volumeDensity)
         doubleCapVolume = np.zeros_like(volumeDensity)
+        invDCVol = np.zeros_like(invariantDoubleCap)
         for i in range(volume.shape[0]):
             if i == 0:
                 volume[i] = volumeDensity[i]
                 doubleCapVolume[i] = doubleCapDensity[i]
+                invDCVol[i] = invDCDensity[i]
                 sphereMeasure2 += weightMeasure[i]
             else:
                 volume[i] = volume[i - 1] + volumeDensity[i]
                 doubleCapVolume[i] = doubleCapVolume[i - 1] + doubleCapDensity[i]
+                invDCVol[i] = invDCVol[i - 1] + invDCDensity[i]
                 sphereMeasure2 += weightMeasure[i]
 
         volume = volume / sphereMeasure2
         doubleCapVolume = doubleCapVolume / sphereMeasure2
-
+        invDCVol = invDCVol / sphereMeasure2
         fig, ax = plt.subplots()
-        ax.plot(r, jacobiSol)
+        # ax.plot(r, jacobiSol)
         # ax.plot(r, weightMeasure)
         # ax.plot(theta, volumeDensity)
         # ax.plot(theta, volumetwo)
@@ -267,6 +390,8 @@ if testType == "JacobiSol":
         # ax.plot(theta, doublecap)
         # ax.plot(theta, doubleCapDensity)
         doubleCapLine, = ax.plot(r, doubleCapVolume, label='Double Cap')
+        invDoubleCapLine, = ax.plot(r, invDCVol, label='Invariant Double Cap')
+        invDoubleCapLine2, = ax.plot(r, invariantDoubleCap)
         # ax.plot(theta, dimension/(dimension-1)*jacobiComp)
         # ax.set_rmax(np.max(jacobiSol))
         # totVol = volume[-1]
@@ -277,34 +402,34 @@ if testType == "JacobiSol":
         # ax.set_rlabel_position(-22.5)  # Move radial labels away from plotted line
         ax.grid(True)
         # 4) shade buckets
-        widths = a[:-1] - a[1:]
-        area = widths.max()
-        heights = area / widths
-        cmap = plt.get_cmap('tab20')
-        for i in range(bucketNr):
-            left = a[i + 1]
-            ax.bar(left, heights[i],
-                   width=widths[i],
-                   align='edge',
-                   facecolor=cmap(i / bucketNr),
-                   alpha=0.4)
-
-        # 5) draw verticals at the midpoints and label
-        for idx in range(c.shape[0]):
-            ci = c[idx]
-            yi = jacobiMidSol[idx]
-            ax.plot([ci, ci], [0, yi], 'k-')
-            label = rf'$f(c_{{{idx}}})$'
-            ax.text(ci, yi,
-                    label,
-                    ha='left', va='bottom',
-                    fontsize=9)
+        # widths = a[:-1] - a[1:]
+        # area = widths.max()
+        # heights = area / widths
+        # cmap = plt.get_cmap('tab20')
+        # for i in range(bucketNr):
+        #     left = a[i + 1]
+        #     ax.bar(left, heights[i],
+        #            width=widths[i],
+        #            align='edge',
+        #            facecolor=cmap(i / bucketNr),
+        #            alpha=0.4)
+        #
+        # # 5) draw verticals at the midpoints and label
+        # for idx in range(c.shape[0]):
+        #     ci = c[idx]
+        #     yi = jacobiMidSol[idx]
+        #     ax.plot([ci, ci], [0, yi], 'k-')
+        #     label = rf'$f(c_{{{idx}}})$'
+        #     ax.text(ci, yi,
+        #             label,
+        #             ha='left', va='bottom',
+        #             fontsize=9)
         # xT = plt.xticks()[0]
         # xL = ['0', r'$\frac{\pi}{4}$', r'$\frac{\pi}{2}$', r'$\frac{3\pi}{4}$',
         #       r'$\pi$', r'$\frac{5\pi}{4}$', r'$\frac{3\pi}{2}$', r'$\frac{7\pi}{4}$']
         # plt.xticks(xT, xL)
         ax.set_title(f"A line plot on a polar axis for dimension {dimension}", va='bottom')
-        ax.legend(handles=[volumeLine, doubleCapLine], loc='upper left', bbox_to_anchor=(0.01, 0.99))
+        ax.legend(handles=[volumeLine, doubleCapLine,invDoubleCapLine], loc='upper left', bbox_to_anchor=(0.01, 0.99))
         plt.show()
 
 
