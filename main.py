@@ -72,6 +72,10 @@ def vectorizeRDP(alpha, gamma, k, zArray):
     return diskVals
 
 
+def imaginaryDiskPoly(alpha, gamma, k, radius, angle):
+    return (radius**abs(gamma))*math.sin(gamma*angle*math.pi)*normedJacobiValue(k, alpha, abs(gamma), float(2*(radius**2)-1))
+
+
 def negAngle(gamma, angle):
     totAngle = gamma*angle - 1/2
     totAngle = totAngle % 2.0

@@ -330,54 +330,58 @@ def normalizeRadials(inputDatapoints, radiusAxis=0, angleAxis=1):
     return normalizedDatapoints
 
 def complexDoubleCap(dim, outputArraySize,poleArraySize=0):
+    # Find f(r) numerically that describes the correlation function for the double cap in dim
     if poleArraySize == 0:
         poleArraySize = outputArraySize
+    # arrays of forbidden innerproducts (only r=t, not z=te^{i\theta} as it has the same value for each \theta)
+    # in order: t, t^2, sqrt(1-t^2), (1-t^2), f(t)
     outputRadiusArray = np.linspace(0, 1, outputArraySize, endpoint=True,dtype=np.longdouble)
     sqrdORA = np.square(outputRadiusArray)
     remainderORA = np.sqrt(1-sqrdORA)
     sqrdremainderORA = 1 - sqrdORA
     outputArray = np.zeros(outputArraySize)
+    # Arrays for r_1, in order: r_1, r_1^2, sqrt(1-r_1^2), (1-r_1^2)
     poleRadiusArray = np.linspace(math.sqrt(1/2), 1, poleArraySize, endpoint=True,dtype=np.longdouble)
     sqrdPRA = np.square(poleRadiusArray)
     remainderPRA = np.sqrt(1-sqrdPRA)
     sqrdremainderPRA = 1 - sqrdPRA
+    # Arrays for r_2, in order: r_2, r_2^2
     poleSecondRadius = np.linspace(0, 1, poleArraySize, endpoint=True,dtype=np.longdouble)
     sqrdSRA = np.square(poleSecondRadius)
-    # weights for the first coordinate where the cap is centered on
+    # weights for r_1 (the first coordinate where the cap is centered on)
     wpoleRadius = (((2**dim)*poleRadiusArray*(dim-1)*(np.power((1-np.square(poleRadiusArray)),(dim-2))))
                    / poleArraySize * (1 - math.sqrt(1/2)))
-    # wpoleRadius /= np.sum(wpoleRadius)
-    # weights for the first coordinate where the cap is centered on
+
+    # weights for r_2 (the second coordinate where the cap is centered on)
     wspoleSecondRadius = (2*poleSecondRadius*(dim-2)*((1-np.square(poleSecondRadius))**(dim-3)))/poleArraySize
-    # wspoleSecondRadius /= np.sum(wspoleSecondRadius)
+
+    # loop over r_1 in [sqrt(1/2),1], r_2 in [0,1]
     for oneIdx, (radOne, sqrdRadOne, remainderRadOne,sqrdRemainderRadOne,weightRadOne) in enumerate(
             zip(poleRadiusArray,sqrdPRA,remainderPRA,sqrdremainderPRA,wpoleRadius)):
         intermediateOutput = np.zeros(outputArraySize)
         for twoIdx, (radTwo, sqrdRadTwo, weightRadTwo) in enumerate(zip(poleSecondRadius,sqrdSRA,wspoleSecondRadius)):
+            # see latex for numerator and denominator of (2)
             arccosNumeratorArray = sqrdORA*sqrdRadOne + sqrdremainderORA*sqrdRemainderRadOne*sqrdRadTwo - 1/2
             arccosDenominatorArray = -2*outputRadiusArray*remainderORA*radOne*remainderRadOne*radTwo
-            ubArray = -arccosNumeratorArray-arccosDenominatorArray
-            lbArray = -arccosNumeratorArray+arccosDenominatorArray
 
+            # Checks if the most disadvantageous/advantageous phase is too large/small respectively
             maskMustBeInIt = (-arccosNumeratorArray-arccosDenominatorArray<=0)
             maskCantBeInIt = (-arccosNumeratorArray + arccosDenominatorArray >= 0)
-            # if np.any(maskMustBeInIt[:-1]):
-            #     print(f"guaranteed {oneIdx},{twoIdx}")
-            # if np.any(maskCantBeInIt[0:]):
-            #     print(f"guaranteed not {oneIdx},{twoIdx}")
-            # arccosDenomMask = (arccosDenominatorArray == 0)
+
+            # Fraction is b in [-1,1], where (1/2>=r^2_1 t^2 + c * r_1 t r_2\sqrt{1-r_1^2} \sqrt{1-t^2}
+            # +r^2_2 (1-r_1^2) (1-t^2)) if and only if c in [-1,b]
             arccosFraction = np.clip(arccosNumeratorArray/arccosDenominatorArray,-1,1)
-            # accosFractionUnclipped = arccosNumeratorArray/arccosDenominatorArray
-            # if not np.all(arccosDenomMask):
-            #     print(np.max(accosFractionUnclipped[np.logical_not(arccosDenomMask)]))
-            #     print(np.min(accosFractionUnclipped[np.logical_not(arccosDenomMask)]))
+
+            # sets the correct fractions for the guaranteed values as a safety measure
             arccosFraction[maskCantBeInIt] = 1
             arccosFraction[maskMustBeInIt] = -1
+            # find what fraction of cosines are in [b,1]
             arcCosArray = np.arccos(arccosFraction)/np.pi
-            # negarcCosArray = np.arccos(-arccosFraction)/np.pi
 
+            # Apply weight to this value for r_2 and add it to the total of r_1
             totalIterdy = weightRadTwo*arcCosArray
             np.add(intermediateOutput, totalIterdy, out=intermediateOutput)
+        # Apply weight to the value for r_1 and add it to the total (hopefully mitigating some rounding errors)
         np.add(outputArray,weightRadOne*intermediateOutput,out=outputArray)
 
     return outputArray

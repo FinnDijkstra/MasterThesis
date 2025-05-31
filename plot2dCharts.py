@@ -366,32 +366,36 @@ if testType == "JacobiSol":
         volume = np.zeros_like(volumeDensity)
         doubleCapVolume = np.zeros_like(volumeDensity)
         invDCVol = np.zeros_like(invariantDoubleCap)
+        totalVolume = np.zeros_like(weightMeasure)
         for i in range(volume.shape[0]):
             if i == 0:
                 volume[i] = volumeDensity[i]
                 doubleCapVolume[i] = doubleCapDensity[i]
                 invDCVol[i] = invDCDensity[i]
                 sphereMeasure2 += weightMeasure[i]
+                totalVolume[i] = weightMeasure[i]
             else:
                 volume[i] = volume[i - 1] + volumeDensity[i]
                 doubleCapVolume[i] = doubleCapVolume[i - 1] + doubleCapDensity[i]
                 invDCVol[i] = invDCVol[i - 1] + invDCDensity[i]
                 sphereMeasure2 += weightMeasure[i]
+                totalVolume[i] = totalVolume[i-1] + weightMeasure[i]
 
         volume = volume / sphereMeasure2
         doubleCapVolume = doubleCapVolume / sphereMeasure2
         invDCVol = invDCVol / sphereMeasure2
         fig, ax = plt.subplots()
-        # ax.plot(r, jacobiSol)
-        volumeLine, = ax.plot(r, weightMeasure)
+        # volumeLine, = ax.plot(r, jacobiSol, label='Invariant kernel solution')
+        # ConstpartLine, = ax.plot(r, weightMeasure, label='Density of the sphere measure')
         # ax.plot(theta, volumeDensity)
-        # ax.plot(theta, volumetwo)
-        # volumeLine, = ax.plot(r, volume, label='Volume')
-        # ax.plot(r, doublecap)
+
+        ConstpartLine, = ax.plot(r, totalVolume/dimension/sphereMeasure2, label="0'th degree part of solution")
+        volumeLine, = ax.plot(r, volume, label='Invariant kernel solution')
+        # doubleCapLine, = ax.plot(r, doublecap, label='Double cap')
         # ax.plot(theta, doubleCapDensity)
-        doubleCapLine, = ax.plot(r, doubleCapVolume, label='Double Cap')
-        invDoubleCapLine, = ax.plot(r, invDCVol, label='Invariant Double Cap')
-        invDoubleCapLine2, = ax.plot(r, invariantDoubleCap)
+        doubleCapLine, = ax.plot(r, doubleCapVolume, label='Double cap')
+        invDoubleCapLine, = ax.plot(r, invDCVol, label='Invariant double cap')
+        # invDoubleCapLine, = ax.plot(r, invariantDoubleCap, label='Invariant double cap')
         # ax.plot(theta, dimension/(dimension-1)*jacobiComp)
         # ax.set_rmax(np.max(jacobiSol))
         # totVol = volume[-1]
@@ -401,6 +405,7 @@ if testType == "JacobiSol":
         # ax.set_rticks([totVol*i/nrOfTicks for i in range(nrOfTicks+1)])
         # ax.set_rlabel_position(-22.5)  # Move radial labels away from plotted line
         ax.grid(True)
+        # ax.set_ylim(0,1.4)
         # 4) shade buckets
         # widths = a[:-1] - a[1:]
         # area = widths.max()
@@ -428,8 +433,8 @@ if testType == "JacobiSol":
         # xL = ['0', r'$\frac{\pi}{4}$', r'$\frac{\pi}{2}$', r'$\frac{3\pi}{4}$',
         #       r'$\pi$', r'$\frac{5\pi}{4}$', r'$\frac{3\pi}{2}$', r'$\frac{7\pi}{4}$']
         # plt.xticks(xT, xL)
-        ax.set_title(f"A line plot on a polar axis for dimension {dimension}", va='bottom')
-        ax.legend(handles=[volumeLine, doubleCapLine,invDoubleCapLine], loc='upper left', bbox_to_anchor=(0.01, 0.99))
+        ax.set_title(f"Integrals in dimension {dimension}", va='bottom') # A line plot on a polar axis for
+        ax.legend(handles=[volumeLine, ConstpartLine, doubleCapLine,invDoubleCapLine], loc='upper left', bbox_to_anchor=(0.01, 0.99))
         plt.show()
 
 
