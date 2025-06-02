@@ -3,6 +3,7 @@ import scipy.stats as st
 from scipy.interpolate import splrep, PPoly, UnivariateSpline
 import math
 import cmath
+from numpy.polynomial import Polynomial
 import numpy as np
 # from scipy.interpolate import UnivariateSpline
 from line_profiler import LineProfiler
@@ -143,6 +144,20 @@ class piecewisePolyPdf(st.rv_continuous):
     def _pdf(self, x, poly):
         return poly(x)          # __call__
 
+
+class polyPdf(st.rv_continuous):
+    # shapes = "poly"
+
+    def __init__(self, poly, a, b, **kwargs):
+        self.poly = poly
+        super().__init__(a=a, b=b, **kwargs)
+
+    # def _argcheck(self, poly):
+    #     # only allow positive c, for instance
+    #     return isinstance(poly, Polynomial)
+
+    def _pdf(self, x):
+        return self.poly(x)          # __call__
 
 
 def createRandomPointsReal(baseDim, nrPoints, checkForMistakesBool=False):
@@ -329,6 +344,106 @@ def normalizeRadials(inputDatapoints, radiusAxis=0, angleAxis=1):
     normalizedDatapoints += oNDimArray
     return normalizedDatapoints
 
+
+def complexDoubleCapv3(dim, outputArraySize, poleResolution=0):
+    if poleResolution == 0:
+        poleResolution = outputArraySize
+    # inbetweenSize = outputArraySize-2
+    tArray = alternateRadiusSpaceConstructor(outputArraySize, dim, 0, 1)
+    r1Array = alternateRadiusSpaceConstructor(poleResolution, dim, np.sqrt(1/2), 1)
+    r2Array = alternateRadiusSpaceConstructor(poleResolution, dim-1, 0, 1)
+    tMesh, r1Mesh, r2Mesh = np.meshgrid(tArray, r1Array, r2Array,indexing="ij")
+    tSquaredMesh = np.square(tMesh)
+    tRemSquared = (1-tSquaredMesh)
+    tRemainder = np.sqrt(tRemSquared)
+    r1SquaredMesh = np.square(r1Mesh)
+    r1RemSquared = (1-r1SquaredMesh)
+    r1Remainder = np.sqrt(r1RemSquared)
+    r2SquaredMesh = np.square(r2Mesh)
+    r2RemSquared = (1-r2SquaredMesh)
+    r2Remainder = np.sqrt(r2RemSquared)
+    # r1WeightPoly = 2**(dim-1)*complexWeightPolyCreator(dim)*(1 - np.sqrt(1/2))
+    # r2WeightPoly = complexWeightPolyCreator(dim-1)
+    # r1WeightMesh = r1WeightPoly(r1Mesh)
+    # r2WeightMesh = r2WeightPoly(r2Mesh)
+    r2True = r2Mesh*r1Remainder
+    numeratorMesh = - tSquaredMesh*r1SquaredMesh - tRemSquared*r1RemSquared*r2SquaredMesh + 1/2
+    denominatorMesh = 2 *tMesh*tRemainder*r1Mesh*r1Remainder*r2Mesh
+    bestMesh = -denominatorMesh+numeratorMesh
+    possibleMesh = (bestMesh < 0)
+    worstMesh = denominatorMesh+numeratorMesh
+    avoidableMesh = (worstMesh > 0)
+    cosinableMesh = np.logical_and(possibleMesh, avoidableMesh)
+    impossibleMesh = np.logical_not(possibleMesh)
+    unavoidableMesh = np.logical_not(avoidableMesh)
+    cosineMesh = np.ones_like(tMesh)
+    cosineMesh[cosinableMesh] = numeratorMesh[cosinableMesh]/denominatorMesh[cosinableMesh]
+    cosineMesh[unavoidableMesh] = -1
+    cosineMesh[impossibleMesh] = 1
+    arccosMesh = np.arccos(cosineMesh)
+    psiValueMesh = arccosMesh/np.pi
+    # weightedMesh = psiValueMesh*r1WeightMesh*r2WeightMesh
+    r2integrated = np.sum(psiValueMesh, axis=2)/poleResolution
+    r1integrated = np.sum(r2integrated, axis=1)/poleResolution
+    # outputArray = np.zeros(outputArraySize)
+    # outputArray[-1] = 1
+    # outputArray[1:-1] = r1integrated
+    # fullRadiusArray = np.zeros(outputArraySize)
+    # fullRadiusArray[1:-1] = tArray
+    # fullRadiusArray[-1] = 1
+    return r1integrated, tArray
+
+
+def padArray(array,leftVal=0,rightVal=1):
+    paddedArray = np.zeros(array.shape[0]+2)
+    paddedArray[1:-1] = array
+    paddedArray[0] = leftVal
+    paddedArray[-1] = rightVal
+    return paddedArray
+
+
+def complexDoubleCapv2(dim, outputArraySize, poleResolution=0):
+    if poleResolution == 0:
+        poleResolution = outputArraySize
+    tArray = np.linspace(0, 1, outputArraySize, endpoint=True)
+    r1Array = np.linspace(np.sqrt(1/2),1,poleResolution, endpoint=True)
+    r2Array = np.linspace(0,1,poleResolution, endpoint=True)
+    tMesh, r1Mesh, r2Mesh = np.meshgrid(tArray, r1Array, r2Array,indexing="ij")
+    tSquaredMesh = np.square(tMesh)
+    tRemSquared = (1-tSquaredMesh)
+    tRemainder = np.sqrt(tRemSquared)
+    r1SquaredMesh = np.square(r1Mesh)
+    r1RemSquared = (1-r1SquaredMesh)
+    r1Remainder = np.sqrt(r1RemSquared)
+    r2SquaredMesh = np.square(r2Mesh)
+    r2RemSquared = (1-r2SquaredMesh)
+    r2Remainder = np.sqrt(r2RemSquared)
+    r1WeightPoly = 2**(dim-1)*complexWeightPolyCreator(dim)*(1 - np.sqrt(1/2))
+    r2WeightPoly = complexWeightPolyCreator(dim-1)
+    r1WeightMesh = r1WeightPoly(r1Mesh)
+    r2WeightMesh = r2WeightPoly(r2Mesh)
+    r2True = r2Mesh*r1Remainder
+    numeratorMesh = - tSquaredMesh*r1SquaredMesh - tRemSquared*r1RemSquared*r2SquaredMesh + 1/2
+    denominatorMesh = -2 *tMesh*tRemainder*r1Mesh*r1Remainder*r2Mesh
+    bestMesh = denominatorMesh-numeratorMesh
+    possibleMesh = (bestMesh < 0)
+    worstMesh = -denominatorMesh-numeratorMesh
+    avoidableMesh = (worstMesh > 0)
+    cosinableMesh = np.logical_and(possibleMesh, avoidableMesh)
+    impossibleMesh = np.logical_not(possibleMesh)
+    unavoidableMesh = np.logical_not(avoidableMesh)
+    cosineMesh = np.ones_like(tMesh)
+    cosineMesh[cosinableMesh] = -numeratorMesh[cosinableMesh]/denominatorMesh[cosinableMesh]
+    cosineMesh[unavoidableMesh] = 1
+    cosineMesh[impossibleMesh] = -1
+    arccosMesh = np.arccos(cosineMesh)
+    psiValueMesh = arccosMesh/np.pi
+    weightedMesh = psiValueMesh*r1WeightMesh*r2WeightMesh
+    r2integrated = np.sum(weightedMesh, axis=2)/poleResolution
+    r1integrated = np.sum(r2integrated, axis=1)/poleResolution
+    return r1integrated
+
+
 def complexDoubleCap(dim, outputArraySize,poleArraySize=0):
     # Find f(r) numerically that describes the correlation function for the double cap in dim
     if poleArraySize == 0:
@@ -387,7 +502,47 @@ def complexDoubleCap(dim, outputArraySize,poleArraySize=0):
     return outputArray
 
 
+def complexWeightPolyCreator(dim):
+    if dim == 1:
+        return 0
+    else:
+        coefficient = 2 * (dim - 1)
+        rFactor = Polynomial([0,1],[0,1],[0,1])
+        remaindersqrd = Polynomial([1,0,-1],[0,1],[0,1])
+        return coefficient*rFactor*(remaindersqrd**(dim-2))
+
+def integratedWeightPolyCreator(dim):
+    if dim == 1:
+        return 0
+    else:
+        remaindersqrd = Polynomial([1, 0, -1], [0, 1], [0, 1])
+        return -Polynomial([1,0,-1],[0,1],[0,1])**(dim-1)
+
+
+def alternateRadiusSpaceConstructor(size, dim, lb=0, ub=1):
+    weightPoly = complexWeightPolyCreator(dim)
+    integratedPoly = integratedWeightPolyCreator(dim)
+    domainSize = integratedPoly(ub)-integratedPoly(lb)
+    lbVal = integratedPoly(lb)
+    dx = 1/(size)
+    measureMiddleLb = dx/2
+    measureMiddleUb = 1-dx/2
+    integralPPFs = np.linspace(measureMiddleLb,measureMiddleUb,size,endpoint=True)
+    scaledPPFs = integralPPFs*domainSize
+    desiredRightVals = -(scaledPPFs+lbVal)
+    remainderSquaredVals = np.power(desiredRightVals,1/(dim-1))
+    rSquaredVals = 1-remainderSquaredVals
+    rVals = np.sqrt(rSquaredVals)
+    return rVals
+
+
+
+
+
 if __name__ == '__main__':
+    rVals2 = alternateRadiusSpaceConstructor(200,4,np.sqrt(1/2),1)
+    complexDoubleCapv2(4,50,250)
+    fz = complexWeightPolyCreator(4)
     cDim = 5
     outputArraySize = 513
     resolution = 1025
