@@ -1,4 +1,4 @@
-from typing import final
+# from typing import final
 import time
 import gurobipy as gp
 from gurobipy import GRB
@@ -8,6 +8,8 @@ import numpy as np
 import fractions
 import random
 import scipy.stats as st
+# import sympy as sym
+import pandas as pd
 
 from matplotlib import pyplot as plt
 
@@ -15,7 +17,7 @@ import SphereBasics
 from line_profiler import LineProfiler
 from numpy.polynomial import Polynomial
 
-from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, polar2z, \
+from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, \
     integratedWeightPolyCreator
 
 nrOfVars = 10
@@ -363,17 +365,6 @@ def modelBQP(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, kMax, 
     diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="diskpoly weights")
     setWeights = m.addVars(nrOfSets, vtype=GRB.CONTINUOUS, lb=0, name="set weights")
 
-    # m.addConstr(gp.quicksum(fList[fIter] * jacobiList[fIter] for fIter in range(nrOfVars)) <= 0,
-    #             name="Jacobi_ConstraintS")
-    # m.addConstr(gp.quicksum(fList[fIter] * jacobiList[fIter] for fIter in range(nrOfVars)) >= 0,
-    #             name="Jacobi_ConstraintL")
-    #
-    # m.addConstr((1 == gp.quicksum(fList[fIter]
-    #                               for fIter in range(nrOfVars))),
-    #             name=f"Measure Constraint")
-
-    # objective = (sphereMeasure**2 * fList[0])
-    # m.setObjective(fList[0], GRB.MAXIMIZE)
     m.addConstr(setWeights.sum() == 1, name="convex description of sets")
     m.addConstr(diskPolyWeights[0,0] - diskPolyWeights.sum()*diskPolyWeights.sum() >= 0, "SDP contraint")
     m.addConstr(gp.quicksum(diskPolyValueTensor[gammaIdx,kIdx,1,0]*diskPolyWeights[gammaIdx,kIdx]
@@ -409,6 +400,117 @@ def modelBQP(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, kMax, 
     # print("Done")
     adjustedDWA = diskWeightsArray/diskSum
     return m, diskWeightsArray, setWeightsArray, adjustedDWA
+
+
+def modelMultipleBQP(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, kMax, listOfPointSets=None,
+                     nrOfPoints=2, nrOfPointSets=1):
+    alpha = complexDimension - 2
+    gammaMax = gammaMax + 1
+    kMax = kMax + 1
+    forbiddenZ = polar2z(forbiddenRadius, forbiddenAngle)
+    if listOfPointSets is None:
+        listOfPointSets = []
+        for pointsSetIdx in range(nrOfPointSets):
+            listOfPointSets.append(SphereBasics.createRandomPointsComplex(complexDimension, nrOfPoints,
+                                                                 baseZ=forbiddenZ)[0])
+    else:
+        nrOfPointSets = len(listOfPointSets)
+        # nrOfPoints = listOfPointSets[0].shape[0]
+    charMatricesList = []
+    setSizeList = []
+    nrOfPointsList = []
+    IPMList = []
+    diskPolyValueTensorList = []
+    for pointSetIdx in range(nrOfPointSets):
+        pointSet = listOfPointSets[pointSetIdx]
+        nrOfPoints = pointSet.shape[0]
+        charMatrix = characteristicMatrix(nrOfPoints)
+        nrOfSets = charMatrix.shape[1]
+
+        innerProductMatrix = pointSet @ pointSet.conj().T
+        ipmRads, ipmAngles = z2polar(innerProductMatrix)
+        diskPolyValueTensor = np.zeros((gammaMax, kMax, nrOfPoints, nrOfPoints))
+        for gamma in range(gammaMax):
+            for k in range(kMax):
+                # diskPolyValueTensor[gamma][k] = vectorizeRDP(alpha, gamma, k, innerProductMatrix)
+
+                diskPolyValueTensor[gamma][k] = (createDiskPolyCosineless(complexDimension, k, gamma)(ipmRads)*
+                                                 np.cos(ipmAngles*gamma))
+        charMatricesList.append(charMatrix)
+        setSizeList.append(nrOfSets)
+        nrOfPointsList.append(nrOfPoints)
+        IPMList.append(innerProductMatrix)
+        diskPolyValueTensorList.append(diskPolyValueTensor)
+    forbiddenInnerproductVals = np.zeros((gammaMax,kMax))
+    for gamma in range(gammaMax):
+        for k in range(kMax):
+            # diskPolyValueTensor[gamma][k] = vectorizeRDP(alpha, gamma, k, innerProductMatrix)
+
+            forbiddenInnerproductVals[gamma][k] = (createDiskPolyCosineless(complexDimension, k, gamma)(forbiddenRadius) *
+                                             np.cos(forbiddenAngle * gamma))
+    m = gp.Model(f"BQP model for forbidden innerproduct {forbiddenZ} in dimension {complexDimension}, "
+                 f"with {nrOfPoints} BQP points,"
+                 f" gamma checked {gammaMax}, k checked {kMax}")
+    m.setParam("OutputFlag", 0)
+    # m.setParam(GRB.Param.DisplayInterval, 10)
+    diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="diskpoly weights")
+    m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum() * diskPolyWeights.sum() >= 0, "SDP contraint")
+    m.addConstr(gp.quicksum(forbiddenInnerproductVals[gammaIdx, kIdx] * diskPolyWeights[gammaIdx, kIdx]
+                            for gammaIdx in range(gammaMax) for kIdx in range(kMax)) == 0,
+                f"Forbidden Innerproduct Constraint")
+    for pointSetIdx in range(nrOfPointSets):
+
+        curNrOfSets = setSizeList[pointSetIdx]
+        curCharMatrix = charMatricesList[pointSetIdx]
+        curDPVT = diskPolyValueTensorList[pointSetIdx]
+        curNrOfPoints = nrOfPointsList[pointSetIdx]
+
+        setWeights = m.addVars(curNrOfSets, vtype=GRB.CONTINUOUS, lb=0, name=f"set weights pointset {pointSetIdx}")
+
+        m.addConstr(setWeights.sum() == 1, name=f"convex description of sets pointset {pointSetIdx}")
+
+
+        # constraintMatrx = [[0 for j in range(nrOfPoints)] for i in range(nrOfPoints)]
+        for mainPointIdx in range(curNrOfPoints):
+            for secondPointIdx in range(mainPointIdx+1):
+                charVector = curCharMatrix[mainPointIdx]*curCharMatrix[secondPointIdx]
+
+                # constraintMatrx[mainPointIdx][secondPointIdx] =
+                m.addConstr(gp.quicksum(curDPVT[gammaIdx, kIdx, mainPointIdx, secondPointIdx] *
+                                        diskPolyWeights[gammaIdx, kIdx]
+                                        for gammaIdx in range(gammaMax) for kIdx in range(kMax))
+                            ==
+                            gp.quicksum(setWeights[setIdx]*charVector[setIdx] for setIdx in range(curNrOfSets)),
+                            f"BPQ  Constraint vectors {mainPointIdx}, {secondPointIdx}, pointset {pointSetIdx}")
+    m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
+    m.update()
+    m.optimize()
+    # setSum = 0
+    # setWeightsArray = np.zeros(nrOfSets)
+    # for i in range(nrOfSets):
+    #     setSum += setWeights[i].x
+    #     setWeightsArray[i] = setWeights[i].x
+    diskSum = 0
+    diskWeightsArray = np.zeros((gammaMax, kMax))
+    for gammaIdx in range(gammaMax):
+        for kIdx in range(kMax):
+            diskSum += diskPolyWeights[gammaIdx,kIdx].x
+            diskWeightsArray[gammaIdx,kIdx] = diskPolyWeights[gammaIdx,kIdx].x
+    setSizeList = []
+    setTotal = 0
+    AddedPoints = 1
+    for pointset in listOfPointSets:
+        curSize = len(pointset)
+        setSizeList.append(curSize)
+        setTotal += curSize
+        AddedPoints += curSize-2
+    # print(f"Objective Iteration {AddedPoints}: {diskSum}. (total points {setTotal}, {setSizeList})")
+    # print(diskSum**2)
+    # print((1/2)**(complexDimension-1))
+    # print("Done")
+    adjustedDWA = diskWeightsArray/diskSum
+    return m, diskWeightsArray, adjustedDWA, diskSum, diskWeightsArray
+
 
 
 def createDiskPolyCosineless(dim, k, gamma):
@@ -469,6 +571,373 @@ def alternateStripNonSpin(arrayTest, testDim, radiusArray, weightsArray, maxDeg=
         totCoef += coefK
         kTest += 1
     return coefList
+
+
+def polyFromCoefs(coefs, polySet):
+    return Polynomial(sum(coefs[curDeg]*polySet[curDeg]
+                                        for curDeg in range(len(coefs))).coef,
+                                    window=[0,1], domain=[0,1])
+
+
+def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCoefficients, polynomialSet,
+                                startingFacet=0):
+    pointSetSize = startingPointset.shape[0]
+
+    startingPolynomial = polyFromCoefs(startingCoefficients, polynomialSet)
+    startingGuess = np.concat([startingPointset.T.real, startingPointset.T.imag])
+    flattenedStartingGuess = startingGuess.ravel()
+    shapeStartingGuess = startingGuess.shape
+    shapeStartingSet = startingPointset.shape
+    startingInnerproduct = ((flattenedStartingGuess[:pointSetSize*dim]-1j*flattenedStartingGuess[pointSetSize*dim:]).T @
+                            (flattenedStartingGuess[:pointSetSize*dim]+1j*flattenedStartingGuess[pointSetSize*dim:]))
+    startingInnerproductv2 = (flattenedStartingGuess.reshape(shapeStartingGuess)[:dim] - 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
+                                                                                dim:]).T @ (
+                                       flattenedStartingGuess.reshape(shapeStartingGuess)[: dim] + 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
+                                                                                           dim:])
+    validIneqs, facetIneqs, betas = facetReader("bqp6.dat")
+    polyVals = lambda S:startingPolynomial(z2polar((S.reshape(shapeStartingGuess)[:dim]-
+                                            1j*S.reshape(shapeStartingGuess)[dim:]).T @
+                                                                    (S.reshape(shapeStartingGuess)[:dim]+
+                                                                     1j*S.reshape(shapeStartingGuess)[dim:]))[0])
+    bestFacet = 0
+    sol = startingGuess
+    lastImprovement = 0
+    facetIdx = startingFacet + 1
+    if validIneqs:
+        nrOfFacets = betas.shape[0]
+        relativeSizes = np.max(np.max(np.abs(facetIneqs),axis=1), axis=1)
+        for facetNr in range(nrOfFacets):
+            facetIdx = -nrOfFacets + facetNr + startingFacet
+            objective = lambda S: betas[facetIdx] - np.sum(
+                np.multiply(facetIneqs[facetIdx],polyVals(S)))
+            constraint = lambda S: np.sum(np.square(S.reshape(shapeStartingGuess)),axis=0)-1
+            res = scipy.optimize.minimize(
+                objective, flattenedStartingGuess,
+                method='trust-constr',
+                constraints={'type': 'eq', 'fun': constraint},
+                tol=1e-10
+            )
+            relativeObjective = res.fun  # / relativeSizes[facetIdx]
+            if relativeObjective < bestFacet:
+                sol = res.x.reshape(shapeStartingGuess)
+                bestFacet = relativeObjective
+                lastImprovement = 0
+            else:
+                lastImprovement += 1
+            if lastImprovement >= 3 and bestFacet < 2/np.log2(nrOfFacets+2)-2/np.log2(facetNr+2):
+                break
+        if bestFacet < 0:
+            return True, (sol[:dim]+1j*sol[dim:]).T, (facetIdx+1) % nrOfFacets
+        else:
+            return False, startingGuess.T, (facetIdx+1) % nrOfFacets
+
+def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIter=10, maxDeg=0, relativityScale=-1,
+                                       maxSetSize=10, uniformCoordinateWise=False,
+                                       reverseWeighted=False, spreadPoints=False):
+    if maxDeg == 0:
+        maxDeg = 4 * (dim - 1)
+    if relativityScale == -1:
+        relativityScale = (maxDeg-1)/maxDeg
+        # relativityScale = 1
+    plotRadii = np.linspace(0, 1, resolution, endpoint=True)
+    # maxIter = 10
+    weightPoly = complexWeightPolyCreator(dim)
+    weightInt = integratedWeightPolyCreator(dim)+1
+    heighestWeightPoint = np.sqrt(1/(2*(dim-2)+1))
+    heighestWeight = weightPoly(heighestWeightPoint)
+    scaledWeightPoly = weightPoly/heighestWeight
+    cDC = SphereBasics.complexDoubleCapv2(dim, outputRes, resolution)
+    radiusSpace = np.linspace(0, 1, outputRes, endpoint=True)
+
+    pointSet1 = np.zeros((2, dim), dtype=np.complex128)
+    pointSet1[0, 0] = 1
+    pointSet1[1, 1] = 1
+
+    polyEstCDC = Polynomial.fit(radiusSpace, cDC, 4 * (dim - 1))
+    coefsPolyCDC = stripNonSpin(polyEstCDC, dim, 10 * outputRes)
+    _, _,  coefsThetav0, bestObjVal,_ = modelMultipleBQP(0, 0, dim, 0, maxDeg,
+                                           listOfPointSets=[pointSet1])
+    coefsForKv0 = coefsThetav0[0]
+    polyList = [createDiskPolyCosineless(dim, kIdx, 0) for kIdx in range(maxDeg+1)]
+    basePoly = sum(polyList[kIdx] * coefsPolyCDC[kIdx] for kIdx in range(len(coefsPolyCDC)))
+    scalingPoly = (1 - relativityScale) * Polynomial([1], window=[0,1],domain=[0,1]) + relativityScale * basePoly
+    scalingPolyV2 = 1 - relativityScale * basePoly
+    polyV0 = sum(polyList[kIdx] * coefsForKv0[kIdx] for kIdx in range(maxDeg+1))
+    # differencePolyv0 = polyV0 - basePoly
+    # differenceDensity0 = differencePolyv0*weightPoly
+    # differenceIntegral0 = differenceDensity0.integ(lbnd=0)
+    # remainingRadius = 1
+
+    # for i in range(2):
+    #     differenceSize0 = differenceIntegral0(remainingRadius)
+    #     pdf0 = differenceDensity0/differenceSize0
+    #     probability = SphereBasics.polyPdf(a=0, b=remainingRadius,
+    #                                                 name=f'Probability Distrubution Init')
+    #     probabilityPdf = probability(poly=pdf0)
+    #     value = probability.rvs()
+    #     pointSet1[2,i] = value
+    #     remainingRadius = np.sqrt(remainingRadius**2-value**2)
+    listOfPointSets = [pointSet1]
+    fullPointSets = []
+    resultingpolyList = [polyV0]
+    coefThetaList = [coefsThetav0]
+    weightPolyList = [complexWeightPolyCreator(dim - depth) for depth in range(dim - 1)]
+    weightIntsList = [integratedWeightPolyCreator(dim - depth) for depth in range(dim - 1)]
+    facetStart = 0
+    if spreadPoints:
+        innerProductList = np.array([0,1])
+        # distantPoly = Polynomial([0,0,1,-2,1], window=[0,1], domain=[0,1])
+    else:
+        innerProductList = []
+        # distantPoly = Polynomial([1], window=[0, 1], domain=[0, 1])
+    for iterationNr in range(maxIter):
+        setSpecificIterNr = iterationNr % (maxSetSize-2)
+        coefsPrevTheta = coefThetaList[iterationNr]
+        polyPrev = resultingpolyList[iterationNr]
+        differencePoly = polyPrev - basePoly
+        scaledDifference = differencePoly * scalingPolyV2
+        # differenceDensity = scaledDifference * weightPoly
+        differenceDensity = scaledDifference * (1-scaledWeightPoly)
+        # scaledDifference, scaledRemainder = np.polydiv(differencePoly.coef, scalingPoly.coef)
+        # polyScaledDifference = Polynomial(scaledDifference, window=[0,1],domain=[0,1])
+        # polyScaledRemainder = Polynomial(scaledRemainder, window=[0,1],domain=[0,1])
+        # PolyScaledFactor = polyScaledDifference*basePoly
+        if plotBool:
+            fig, ax = plt.subplots()
+            v1Line, = ax.plot(plotRadii, polyPrev(plotRadii), label="Previous")
+
+            v3Line, = ax.plot(plotRadii, basePoly(plotRadii), label='Base')
+            v4Line, = ax.plot(plotRadii, scaledWeightPoly(plotRadii), label='Weight')
+            ax.legend(handles=[v1Line,  v3Line, v4Line], loc='upper left',
+                      bbox_to_anchor=(0.01, 0.99))
+            plt.show()
+            fig, ax = plt.subplots()
+            v2Line, = ax.plot(plotRadii, differencePoly(plotRadii), label='Difference')
+            v5Line, = ax.plot(plotRadii, scaledDifference(plotRadii), label='Scaled Difference')
+            v6Line, = ax.plot(plotRadii, differenceDensity(plotRadii), label='Scaled Difference Density')
+            # scaledWeightPoly
+            ax.legend(handles=[ v2Line, v5Line,v6Line], loc='upper left',
+                      bbox_to_anchor=(0.01, 0.99))
+            plt.show()
+
+        differenceIntegral = differenceDensity.integ(lbnd=0)
+        remainingRadius = 1
+        nrOfNextPoints = 3 + setSpecificIterNr
+        if setSpecificIterNr == 0 and iterationNr != 0:
+            fullPointSets.append(listOfPointSets[iterationNr])
+            prevPointSet = listOfPointSets[0]
+        else:
+            prevPointSet = listOfPointSets[iterationNr]
+        pointSetNew = np.zeros((nrOfNextPoints, dim),dtype=np.complex128)
+        pointSetNew[:nrOfNextPoints - 1] = prevPointSet
+        if uniformCoordinateWise:
+            CoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            newPoint = np.zeros(dim,dtype=np.complex128)
+            relativeSizes = np.random.random(size=dim-1)
+            for i in range(min(dim, nrOfNextPoints )):
+                if remainingRadius <= 0:
+                    break
+                if i + 1 < min(dim, nrOfNextPoints):
+                    coordinateRadius = remainingRadius*relativeSizes[i]
+                else:
+                    coordinateRadius = remainingRadius
+                coordinateValue = coordinateRadius * np.exp(1j * CoordinateAngles[i])
+                newPoint[i] = coordinateValue
+                remainingRadius = np.sqrt(remainingRadius ** 2 - coordinateRadius ** 2)
+        elif reverseWeighted:
+            CoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            newPoint = np.zeros(dim, dtype=np.complex128)
+            relativeSizes = np.random.random(size=dim - 1)
+            for i in range(min(dim, nrOfNextPoints)):
+                if remainingRadius <= 0:
+                    break
+                if i + 1 < min(dim, nrOfNextPoints):
+                    maxInt = weightInt(remainingRadius)
+                    scaledWeightInt = weightInt/maxInt
+                    unTransformedFactor = remainingRadius * relativeSizes[i]
+                    coordinateRadius = remainingRadius*scaledWeightInt(unTransformedFactor)
+                else:
+                    coordinateRadius = remainingRadius
+                coordinateValue = coordinateRadius * np.exp(1j * CoordinateAngles[i])
+                newPoint[i] = coordinateValue
+                remainingRadius = np.sqrt(remainingRadius ** 2 - coordinateRadius ** 2)
+        elif spreadPoints:
+            CoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            newPoint = np.zeros(dim, dtype=np.complex128)
+            relativeSizes = np.random.random(size=dim - 1)
+            for i in range(min(dim, nrOfNextPoints)):
+                if remainingRadius <= 0:
+                    break
+                if i + 1 < min(dim, nrOfNextPoints):
+                    pieceWisePolyBreakpoints = np.zeros(2*innerProductList.shape[0]-1)
+                    for leftIdx in range(innerProductList.shape[0]):
+                        for shiftIdx in range(2):
+                            pwpbIdx = 2*leftIdx+shiftIdx
+                            if pwpbIdx < pieceWisePolyBreakpoints.shape[0]:
+                                pieceWisePolyBreakpoints[pwpbIdx] = (1/2*innerProductList[leftIdx]+
+                                                                     1/2*innerProductList[leftIdx+shiftIdx])
+                    # spreadInt = distantPoly.integ(lbnd=0)
+                    # intHeight = spreadInt(remainingRadius)
+                    # scaledAndShiftedSpreadInt = spreadInt / intHeight - relativeSizes[i]
+                    # roots = scaledAndShiftedSpreadInt.roots()
+                    # realMask = (np.abs(np.imag(roots)) < 0.1**5)
+                    # realMaskv2 = (np.imag(roots) == 0)
+                    # if np.any(realMask != realMaskv2):
+                    #     print(roots[(realMask - realMaskv2)])
+                    # positiveRealMask = (np.real(roots) >= 0)
+                    # nonEliminated = np.real(roots[positiveRealMask*realMask])
+                    # desiredRoot = np.argmin(nonEliminated)
+                    # pieceWiseTupleList = []
+                    # x = sym.symbols('x', positive=True)
+                    # for piecewiseIdx in range(pieceWisePolyBreakpoints.shape[0]):
+                    #     if piecewiseIdx % 2 == 0:
+                    #         pieceWiseTupleList.append((x-pieceWisePolyBreakpoints[piecewiseIdx],
+                    #                                    x <= pieceWisePolyBreakpoints[piecewiseIdx+1]))
+                    #     else:
+                    #         pieceWiseTupleList.append((-x + pieceWisePolyBreakpoints[piecewiseIdx+ 1],
+                    #                                    x <= pieceWisePolyBreakpoints[piecewiseIdx + 1]))
+                    # pieceWiseFunction = sym.Piecewise(*pieceWiseTupleList)
+                    #
+                    sizesOfParts = pieceWisePolyBreakpoints[:-1]-pieceWisePolyBreakpoints[1:]
+                    intsOfParts = np.square(sizesOfParts)
+                    radiusIdx = np.searchsorted(pieceWisePolyBreakpoints, remainingRadius)
+                    if radiusIdx == intsOfParts.shape[0]:
+                        radiusIdx -= 1
+                        cumsumOfInts = np.cumsum(intsOfParts)
+                        totalOfInt = np.sum(cumsumOfInts[- 1])
+                    else:
+                        if radiusIdx % 2 == 1:
+                            intRadContribution = np.square(remainingRadius-pieceWisePolyBreakpoints[radiusIdx-1])
+                        else:
+                            radSquaredDistance = np.square(-remainingRadius+pieceWisePolyBreakpoints[radiusIdx])
+                            intRadContribution = intsOfParts[radiusIdx] - radSquaredDistance
+                        cumsumOfInts = np.cumsum(intsOfParts)
+                        totalOfInt = np.sum(cumsumOfInts[radiusIdx-1])+intRadContribution
+                    relativeOfInt = totalOfInt*relativeSizes[i]
+                    newIdx = np.searchsorted(cumsumOfInts, relativeOfInt)
+                    if newIdx % 2 == 1:
+                        coordinateRadius = (np.sqrt(relativeOfInt-cumsumOfInts[newIdx-1])
+                                            + pieceWisePolyBreakpoints[newIdx-1])
+                    else:
+                        coordinateRadius = -(np.sqrt(-relativeOfInt+cumsumOfInts[newIdx])
+                                            + pieceWisePolyBreakpoints[newIdx])
+                    # coordinateRadius = nonEliminated[desiredRoot]
+                else:
+                    coordinateRadius = remainingRadius
+                coordinateValue = coordinateRadius * np.exp(1j * CoordinateAngles[i])
+                newPoint[i] = coordinateValue
+                insertIdx = np.searchsorted(innerProductList, coordinateRadius)
+
+                # Insert x at the correct index
+                innerProductList = np.insert(innerProductList, insertIdx, coordinateRadius)
+                # distantPoly *= Polynomial([coordinateRadius**2,-2*coordinateRadius,1], window=[0,1],domain=[0,1])
+                remainingRadius = np.sqrt(remainingRadius ** 2 - coordinateRadius ** 2)
+        else:
+            FirstCoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=2)
+            overUnderRest = np.random.randint(0, 2, size=min(dim, nrOfNextPoints - 1))
+
+            newPoint = np.zeros(dim,dtype=np.complex128)
+            for i in range(min(dim, nrOfNextPoints - 1)):
+                if remainingRadius <= 0:
+                    break
+                if i <= 1:
+                    differenceSizeIdx = differenceIntegral(remainingRadius)
+                    pdfIdx = differenceDensity / differenceSizeIdx
+                    probability = SphereBasics.polyPdf(a=0, b=remainingRadius, poly=pdfIdx,
+                                                       name=f'Probability Distrubution Init')
+                    radiusCur = probability.rvs()
+                    coordinate = radiusCur * np.exp(1j * FirstCoordinateAngles[i])
+                else:
+                    # use i'th point as w
+                    comparisonPoint = pointSetNew[i]
+                    # preditermined coordinates have inner product p(v,w) below
+                    innerProductWithPrev = np.vdot(comparisonPoint[:i], newPoint[:i])
+                    absIPWP = np.abs(innerProductWithPrev)
+                    # w_i
+                    PrevLastCoordinateRadius = np.abs(comparisonPoint[i])
+                    # |<v,w>| in [|p(v,w)| - |v_max w_i|, |p(v,w)| - |v_max w_i|]
+                    lbIP = max(0, absIPWP - PrevLastCoordinateRadius * remainingRadius)
+                    ubIP = min(1, absIPWP + PrevLastCoordinateRadius * remainingRadius)
+                    # adjust probability distribution within range of possibilities
+                    differenceSizeIdx = differenceIntegral(ubIP) - differenceIntegral(lbIP)
+                    pdfIdx = differenceDensity / differenceSizeIdx
+                    probability = SphereBasics.polyPdf(a=lbIP, b=ubIP, poly=pdfIdx,
+                                                       name=f'Probability Distrubution innerproduct')
+                    desiredInnerproduct = probability.rvs()
+                    # |<v,w>| must be adjusted by v_i*w_i with the number below
+                    desiredLastCoordinateFactor = desiredInnerproduct - absIPWP
+                    if i == dim - 1:
+                        # cannot funnel remaining radius to another coordinate
+                        radiusCur = remainingRadius
+                    else:
+                        # |v_i| must be in [t/w_i,v_max]
+                        radiusLB = np.abs(desiredLastCoordinateFactor) / PrevLastCoordinateRadius
+                        # choose using weighted distrubution what part of the radius stays on this coordinate
+                        curWeightPoly = weightPolyList[i]
+                        curIntPoly = weightIntsList[i]
+                        curPossibilitySize = curIntPoly(remainingRadius) - curIntPoly(radiusLB)
+                        curWeightPoly /= curPossibilitySize
+                        radiusProbability = SphereBasics.polyPdf(a=radiusLB, b=remainingRadius, poly=curWeightPoly,
+                                                                 name=f'radiusPart distribution')
+                        radiusCur = radiusProbability.rvs()
+                    # with |v_i| = radiusCur, a relative phase is found to get desired innerproduct,
+                    # randomly choosing for [0,pi] or [-pi,0]
+                    relativeAngle = (2 * overUnderRest[i] - 1) * np.arccos(
+                        (desiredLastCoordinateFactor ** 2 -
+                         (PrevLastCoordinateRadius * radiusCur) ** 2)
+                        / (2 * (PrevLastCoordinateRadius * radiusCur)))
+                    # the true phase is found by multiplying the relative phase with the phase of the p(v,w)
+                    coordinate = radiusCur * np.exp(1j * relativeAngle) * (innerProductWithPrev / absIPWP)
+                    # coordinate = radiusCur*np.exp(1j*coordinateAngles[i])
+                newPoint[i] = coordinate
+                remainingRadius = np.sqrt(remainingRadius ** 2 - radiusCur ** 2)
+            if nrOfNextPoints <= dim:
+                newPoint[nrOfNextPoints - 1] = remainingRadius
+        pointSetNew[nrOfNextPoints - 1] = newPoint
+        listOfPointSets.append(pointSetNew)
+        newInnerproducts = pointSetNew @ pointSetNew.conj().T
+        newRadii, _ = z2polar(newInnerproducts)
+        for i in range(newRadii.shape[0]):
+            if newRadii[i][i] < 1-0.000001 or newRadii[i][i] > 1+0.000001:
+                print(f"Radius error: {newRadii[i][i]}")
+        # plt.hist(newRadii.flatten(),bins=np.linspace(0,1,21,endpoint=True))
+        # plt.show()
+        # print(newRadii)
+        _, _, coefsCurTheta, curObjVal, unscaledCoefsTheta = modelMultipleBQP(0, 0, dim, 0,
+                                                maxDeg, listOfPointSets=[listOfPointSets[iterationNr+1]]+fullPointSets)
+        if listOfPointSets[iterationNr+1].shape[0]==6:
+            foundBool, ineqPointset, facetStart = facetInequalityBQPGammaless(dim, listOfPointSets[iterationNr+1], fullPointSets,
+                                                                  unscaledCoefsTheta[0],polyList,startingFacet=facetStart)
+            if foundBool:
+                _,_,coefsFacetTheta, facetObjVal,_ = modelMultipleBQP(0, 0, dim, 0,
+                                                            maxDeg, listOfPointSets=[ineqPointset] + fullPointSets)
+                print(f"facet ineqs gave us {facetObjVal}, instead of {curObjVal}")
+                if facetObjVal < curObjVal:
+                    curObjVal = facetObjVal
+                    listOfPointSets[iterationNr+1] = ineqPointset
+                    coefsCurTheta = coefsFacetTheta
+            else:
+                print("facets did not work")
+
+        # for kIdx in range(maxDeg+1):
+        #     if coefsCurTheta[0][kIdx] < 0.0001:
+        #         coefsCurTheta[0][kIdx] = 0
+        if curObjVal < bestObjVal:
+            if printBool:
+                if curObjVal < bestObjVal-0.01 and curObjVal<0.29:
+                    print(f"current objective value: {curObjVal}")
+                    print("Large Improvement with new Innerproducts:")
+                    print(newInnerproducts)
+        bestObjVal = curObjVal
+        coefThetaList.append(coefsCurTheta[0])
+        polyVcur = sum(polyList[kIdx] * coefsCurTheta[0][kIdx] for kIdx in range(maxDeg+1))
+        resultingpolyList.append(polyVcur)
+        # if bestObjVal < (1/2)**(dim-1):
+        #     print("objValError")
+    return bestObjVal
+
+
+
 
 
 def oldTestForCDCMethods():
@@ -632,132 +1101,144 @@ def oldTestForCDCMethods():
     # print(bestPower)
 
 
+
+def facetTest(facetArray,betaArray,N):
+    nrOfFacets = betaArray.shape[0]
+    # boolArray = np.zeros(nrOfFacets,dtype=bool)
+    charMatrix = characteristicMatrix(N)
+    resultMatrix = np.zeros((facetArray.shape[0],charMatrix.shape[1]))
+    for facetIdx in range(facetArray.shape[0]):
+        for setIdx in range(charMatrix.shape[1]):
+            resultMatrix[facetIdx,setIdx] = np.linalg.multi_dot([charMatrix[:,setIdx],facetArray[facetIdx],charMatrix[:,setIdx]])
+    # resultMatrix = facetArray @ charMatrix
+    boolMatrix = (resultMatrix <= betaArray[:,None])
+    boolArray = np.any(boolMatrix, axis=1)
+    invalidArray = np.logical_not(boolArray)
+    return boolArray, invalidArray
+
+
+def facetReader(filename):
+    ineqList = []
+    betaList = []
+    NGlobal = -1
+    with open(filename, 'r') as file:
+        df = pd.read_csv(filename, delimiter=' ',header=None)
+        for index, row in df.iterrows():
+            rowValues = row.values
+            N = rowValues[0]
+            if index == 0:
+                NGlobal = N
+            else:
+                if N != NGlobal:
+                    print("Non uniform N")
+            beta = rowValues[1]
+            triangleDescription = rowValues[2:]
+            A = np.zeros((N,N), dtype=np.int32)
+            elementIdx = 0
+            for i in range(N):
+                for j in range(i,N):
+                    A[j, i] = triangleDescription[elementIdx]
+                    A[i,j] = triangleDescription[elementIdx]
+                    elementIdx += 1
+            ineqList.append(A)
+            betaList.append(beta)
+    ineqArray = np.array(ineqList)
+    betaArray = np.array(betaList)
+    validArray, invalidArray = facetTest(ineqArray, betaArray,NGlobal)
+
+    if np.any(invalidArray):
+        print(f"{np.where(invalidArray)} are invalid facets")
+        return False, ineqArray, betaArray
+    else:
+        return True, ineqArray, betaArray
+
+#     function
+#     read_bqp_inequalities(filename)
+#     ineqs = []
+#     for s in eachline(filename)
+#         numbers = map(x -> parse(Int, x), split(s))
+#
+#         N = numbers[1]
+#         beta = numbers[2]
+#
+#         A = zeros(Int, N, N)
+#         cur = 3
+#         for i = 1:N
+#         for j = i:N
+#         A[i, j] = A[j, i] = numbers[cur]
+#         cur += 1
+#     end
+#
+#
+# end
+#
+# if !is_bqp_ineq(A, beta)
+# error("invalid BQP inequality")
+# end
+#
+# push!(ineqs, (A, beta))
+# end
+#
+# return ineqs
+# end
+
+
+def quickJumpNavigator():
+    return "ok"
+
+
 if __name__ == '__main__':
     quicktest = True
-    plotBool = True
+    plotBool = False
+    printBool = False
+    validFacets, ineqArray, betaArray = facetReader("bqp6.dat")
     if quicktest:
-        n = 4
-        plotRadii = np.linspace(0,1,200,endpoint=True)
-        maxIter = 10
-        weightPoly = complexWeightPolyCreator(n)
-        outputRes = 300
-        resolutionInt = 201
-        cDC = SphereBasics.complexDoubleCapv2(n, outputRes, resolutionInt)
-        radiusSpace = np.linspace(0,1,outputRes,endpoint=True)
-        maxDeg = 4*(n-1)
-        polyEstCDC = Polynomial.fit(radiusSpace, cDC, maxDeg)
-        coefsPolyCDC = stripNonSpin(polyEstCDC, n, 10 * outputRes)
-        _,_,_,coefsThetav0 = modelBQP(0, 0, n, 3, maxDeg+1)
-        coefsForKv0 = coefsThetav0[0]
-        polyList = [createDiskPolyCosineless(n,kIdx,0) for kIdx in range(maxDeg+1)]
-        basePoly = sum(polyList[kIdx]*coefsPolyCDC[kIdx] for kIdx in range(len(coefsPolyCDC)))
+        # n = 4
+        #
+        testMax = 10
+        testResults = np.ones((testMax,7))
+        testDimension = 4
+        nrOfWins = np.zeros(7)
+        nrOfPointsets = 4
+        SizeOfPointSets =6
+        maxDegAll = 20
+        for testNr in range(testMax):
 
-        polyV0 = sum(polyList[kIdx]*coefsForKv0[kIdx] for kIdx in range(maxDeg+1))
-        # differencePolyv0 = polyV0 - basePoly
-        # differenceDensity0 = differencePolyv0*weightPoly
-        # differenceIntegral0 = differenceDensity0.integ(lbnd=0)
-        # remainingRadius = 1
-        pointSet1 = np.zeros((2,n))
-        pointSet1[0,0] = 1
-        pointSet1[1,1] = 1
-        # for i in range(2):
-        #     differenceSize0 = differenceIntegral0(remainingRadius)
-        #     pdf0 = differenceDensity0/differenceSize0
-        #     probability = SphereBasics.polyPdf(a=0, b=remainingRadius,
-        #                                                 name=f'Probability Distrubution Init')
-        #     probabilityPdf = probability(poly=pdf0)
-        #     value = probability.rvs()
-        #     pointSet1[2,i] = value
-        #     remainingRadius = np.sqrt(remainingRadius**2-value**2)
-        listOfPointSets = [pointSet1]
-        resultingpolyList = [polyV0]
-        coefThetaList = [coefsThetav0]
-        weightPolyList = [complexWeightPolyCreator(n-depth) for depth in range(n-1)]
-        weightIntsList = [integratedWeightPolyCreator(n-depth) for depth in range(n-1)]
-        for iterationNr in range(maxIter):
-            coefsPrevTheta = coefThetaList[iterationNr]
-            polyPrev = resultingpolyList[iterationNr]
-            differencePoly = polyPrev - basePoly
-            if plotBool:
-                fig, ax = plt.subplots()
-                v1Line, = ax.plot(plotRadii, polyPrev(plotRadii), label="Previous")
-                v2Line, = ax.plot(plotRadii, differencePoly(plotRadii), label='Difference')
-                v3Line, = ax.plot(plotRadii, basePoly(plotRadii), label='Base')
-                ax.legend(handles=[v1Line, v2Line, v3Line], loc='upper left',
-                          bbox_to_anchor=(0.01, 0.99))
-                plt.show()
-            differenceDensity = differencePoly * weightPoly
-            differenceIntegral = differenceDensity.integ(lbnd=0)
-            remainingRadius = 1
-            nrOfNextPoints = 3 + iterationNr
-            prevPointSet = listOfPointSets[iterationNr]
-            pointSetNew = np.zeros((nrOfNextPoints, n))
-            pointSetNew[:nrOfNextPoints-1] = prevPointSet
-            FirstCoordinateAngles = st.uniform.rvs(scale=2*math.pi, size=2)
-            overUnderRest = np.random.randint(0,2,size=min(n,nrOfNextPoints-1))
+            TrueRandom = modelMultipleBQP(0, 0, testDimension, 0,
+                             maxDegAll, nrOfPoints=SizeOfPointSets, nrOfPointSets=nrOfPointsets)[3]
+            bestObjValrelative = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                                    maxIter=nrOfPointsets * SizeOfPointSets,
+                                                                    maxSetSize=SizeOfPointSets, maxDeg=maxDegAll)
+            bestObjValSpread = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                                  maxIter=nrOfPointsets * SizeOfPointSets,
+                                                                  maxSetSize=SizeOfPointSets,
+                                                                  spreadPoints=True, maxDeg=maxDegAll)
+            bestObjValInverse = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                                      maxIter=nrOfPointsets * SizeOfPointSets,
+                                                                      maxSetSize=SizeOfPointSets,
+                                                                      reverseWeighted=True, maxDeg=maxDegAll)
 
-            newPoint = np.zeros(n)
-            for i in range(min(n,nrOfNextPoints-1)):
-                if i <= 1:
-                    differenceSizeIdx = differenceIntegral(remainingRadius)
-                    pdfIdx = differenceDensity / differenceSizeIdx
-                    probability = SphereBasics.polyPdf(a=0, b=remainingRadius,poly=pdfIdx,
-                                                       name=f'Probability Distrubution Init')
-                    radiusCur = probability.rvs()
-                    coordinate = radiusCur * np.exp(1j * FirstCoordinateAngles[i])
-                else:
-                    # use i'th point as w
-                    comparisonPoint = pointSetNew[i]
-                    # preditermined coordinates have inner product p(v,w) below
-                    innerProductWithPrev = np.vdot(comparisonPoint[:i], newPoint[:i])
-                    absIPWP = np.abs(innerProductWithPrev)
-                    # w_i
-                    PrevLastCoordinateRadius = np.abs(comparisonPoint[i])
-                    # |<v,w>| in [|p(v,w)| - |v_max w_i|, |p(v,w)| - |v_max w_i|]
-                    lbIP = max(0,absIPWP - PrevLastCoordinateRadius * remainingRadius)
-                    ubIP = min(1,absIPWP + PrevLastCoordinateRadius * remainingRadius)
-                    # adjust probability distribution within range of possibilities
-                    differenceSizeIdx = differenceIntegral(ubIP) - differenceIntegral(lbIP)
-                    pdfIdx = differenceDensity / differenceSizeIdx
-                    probability = SphereBasics.polyPdf(a=lbIP, b=ubIP,poly=pdfIdx,
-                                                       name=f'Probability Distrubution innerproduct')
-                    desiredInnerproduct = probability.rvs()
-                    # |<v,w>| must be adjusted by v_i*w_i with the number below
-                    desiredLastCoordinateFactor = desiredInnerproduct - absIPWP
-                    if i == n-1:
-                        # cannot funnel remaining radius to another coordinate
-                        radiusCur = remainingRadius
-                    else:
-                        # |v_i| must be in [t/w_i,v_max]
-                        radiusLB = np.abs(desiredLastCoordinateFactor)/PrevLastCoordinateRadius
-                        # choose using weighted distrubution what part of the radius stays on this coordinate
-                        curWeightPoly = weightPolyList[i]
-                        curIntPoly = weightIntsList[i]
-                        curPossibilitySize = curIntPoly(remainingRadius) - curIntPoly(radiusLB)
-                        curWeightPoly /= curPossibilitySize
-                        radiusProbability = SphereBasics.polyPdf(a=radiusLB, b=remainingRadius,poly=curWeightPoly,
-                                                            name=f'radiusPart distribution')
-                        radiusCur = radiusProbability.rvs()
-                    # with |v_i| = radiusCur, a relative phase is found to get desired innerproduct,
-                    # randomly choosing for [0,pi] or [-pi,0]
-                    relativeAngle = (2*overUnderRest[i]-1) * np.arccos((desiredLastCoordinateFactor**2 - absIPWP**2 -
-                                                                  (PrevLastCoordinateRadius*radiusCur)**2)
-                                                                 / (2*(PrevLastCoordinateRadius*radiusCur)))
-                    # the true phase is found by multiplying the relative phase with the phase of the p(v,w)
-                    coordinate = radiusCur * np.exp(1j * relativeAngle)*(innerProductWithPrev/absIPWP)
-                    # coordinate = radiusCur*np.exp(1j*coordinateAngles[i])
-                newPoint[i] = coordinate
-                remainingRadius = np.sqrt(remainingRadius ** 2 - radiusCur ** 2)
-            if nrOfNextPoints <= n:
-                newPoint[nrOfNextPoints-1] = remainingRadius
-            pointSetNew[nrOfNextPoints - 1] = newPoint
-            listOfPointSets.append(pointSetNew)
-            _, _, _, coefsCurTheta = modelBQP(0, 0, n, 3,
-                                            maxDeg + 1, pointMatrix=listOfPointSets[iterationNr])
-            coefThetaList.append(coefsCurTheta[0])
-            polyVcur = sum(polyList[kIdx] * coefsCurTheta[0][kIdx] for kIdx in range(maxDeg + 1))
-            resultingpolyList.append(polyVcur)
+            bestObjValFlat = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*SizeOfPointSets,
+                                                                maxSetSize=SizeOfPointSets, relativityScale=0,
+                                                                maxDeg=maxDegAll)
+            bestObjValScaled = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*SizeOfPointSets,
+                                                                  maxSetSize=SizeOfPointSets, relativityScale=1,
+                                                                  maxDeg=maxDegAll)
+            bestObjValUniform = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*SizeOfPointSets,
+                                                                   maxSetSize=SizeOfPointSets,
+                                                                   uniformCoordinateWise=True, maxDeg=maxDegAll)
 
+            testResultArray = np.array([TrueRandom,bestObjValSpread,bestObjValInverse,bestObjValrelative,bestObjValFlat,
+                                        bestObjValScaled,bestObjValUniform])
+            objErrorMask = (testResultArray < (1/2)**(testDimension-1))
+            testResultArray[objErrorMask] = 1/testDimension
+            winner = np.argmin(testResultArray)
+            testResults[testNr]=testResultArray
+            print(testResultArray)
+            nrOfWins[winner] += 1
+        overalWinner = np.argmin(testResults)
+        print(f"Nr of wins: {nrOfWins} (true random, relative error, flat error, scaled error, uniform coordinate)")
+        print(f"Overal winner: {overalWinner} with Objective Value: {testResults.flatten()[overalWinner]}")
 
 
 
