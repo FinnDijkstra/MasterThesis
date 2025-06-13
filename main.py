@@ -611,21 +611,26 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
             objective = lambda S: betas[facetIdx] - np.sum(
                 np.multiply(facetIneqs[facetIdx],polyVals(S)))
             constraint = lambda S: np.sum(np.square(S.reshape(shapeStartingGuess)),axis=0)-1
-            res = scipy.optimize.minimize(
-                objective, flattenedStartingGuess,
-                method='trust-constr',
-                constraints={'type': 'eq', 'fun': constraint},
-                tol=1e-10
-            )
-            relativeObjective = res.fun  # / relativeSizes[facetIdx]
-            if relativeObjective < bestFacet:
-                sol = res.x.reshape(shapeStartingGuess)
-                bestFacet = relativeObjective
-                lastImprovement = 0
-            else:
+            try:
+                res = scipy.optimize.minimize(
+                    objective, flattenedStartingGuess,
+                    method='trust-constr',
+                    constraints={'type': 'eq', 'fun': constraint},
+                    tol=1e-8
+                )
+            except:
                 lastImprovement += 1
-            if lastImprovement >= 3 and bestFacet < 2/np.log2(nrOfFacets+2)-2/np.log2(facetNr+2):
-                break
+            else:
+                relativeObjective = res.fun  # / relativeSizes[facetIdx]
+                if relativeObjective < bestFacet:
+                    sol = res.x.reshape(shapeStartingGuess)
+                    bestFacet = relativeObjective
+                    lastImprovement = 0
+                else:
+                    lastImprovement += 1
+            finally:
+                if lastImprovement >= 3 and bestFacet < -3:#*(-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2)):
+                    break
         if bestFacet < 0:
             return True, (sol[:dim]+1j*sol[dim:]).T, (facetIdx+1) % nrOfFacets
         else:
@@ -633,7 +638,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
 
 def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIter=10, maxDeg=0, relativityScale=-1,
                                        maxSetSize=10, uniformCoordinateWise=False,
-                                       reverseWeighted=False, spreadPoints=False):
+                                       reverseWeighted=False, spreadPoints=False, basePoly=None):
     if maxDeg == 0:
         maxDeg = 4 * (dim - 1)
     if relativityScale == -1:
@@ -641,25 +646,30 @@ def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIt
         # relativityScale = 1
     plotRadii = np.linspace(0, 1, resolution, endpoint=True)
     # maxIter = 10
+    polyList = [createDiskPolyCosineless(dim, kIdx, 0) for kIdx in range(maxDeg + 1)]
     weightPoly = complexWeightPolyCreator(dim)
-    weightInt = integratedWeightPolyCreator(dim)+1
-    heighestWeightPoint = np.sqrt(1/(2*(dim-2)+1))
+    weightInt = integratedWeightPolyCreator(dim) + 1
+    heighestWeightPoint = np.sqrt(1 / (2 * (dim - 2) + 1))
     heighestWeight = weightPoly(heighestWeightPoint)
-    scaledWeightPoly = weightPoly/heighestWeight
-    cDC = SphereBasics.complexDoubleCapv2(dim, outputRes, resolution)
-    radiusSpace = np.linspace(0, 1, outputRes, endpoint=True)
+    scaledWeightPoly = weightPoly / heighestWeight
+    if basePoly is None:
+        cDC = SphereBasics.complexDoubleCapv2(dim, outputRes, resolution)
+        radiusSpace = np.linspace(0, 1, outputRes, endpoint=True)
+        polyEstCDC = Polynomial.fit(radiusSpace, cDC, 4 * (dim - 1))
+        coefsPolyCDC = stripNonSpin(polyEstCDC, dim, 10 * outputRes)
+        basePoly = sum(polyList[kIdx] * coefsPolyCDC[kIdx] for kIdx in range(len(coefsPolyCDC)))
 
     pointSet1 = np.zeros((2, dim), dtype=np.complex128)
     pointSet1[0, 0] = 1
     pointSet1[1, 1] = 1
 
-    polyEstCDC = Polynomial.fit(radiusSpace, cDC, 4 * (dim - 1))
-    coefsPolyCDC = stripNonSpin(polyEstCDC, dim, 10 * outputRes)
+
     _, _,  coefsThetav0, bestObjVal,_ = modelMultipleBQP(0, 0, dim, 0, maxDeg,
                                            listOfPointSets=[pointSet1])
     coefsForKv0 = coefsThetav0[0]
-    polyList = [createDiskPolyCosineless(dim, kIdx, 0) for kIdx in range(maxDeg+1)]
-    basePoly = sum(polyList[kIdx] * coefsPolyCDC[kIdx] for kIdx in range(len(coefsPolyCDC)))
+
+
+
     scalingPoly = (1 - relativityScale) * Polynomial([1], window=[0,1],domain=[0,1]) + relativityScale * basePoly
     scalingPolyV2 = 1 - relativityScale * basePoly
     polyV0 = sum(polyList[kIdx] * coefsForKv0[kIdx] for kIdx in range(maxDeg+1))
@@ -916,8 +926,10 @@ def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIt
                     curObjVal = facetObjVal
                     listOfPointSets[iterationNr+1] = ineqPointset
                     coefsCurTheta = coefsFacetTheta
+                else:
+                    print(f"facets did not improve the solution ({facetObjVal} new, {curObjVal} old)")
             else:
-                print("facets did not work")
+                print(f"did not find good facet (cur sol value {curObjVal})")
 
         # for kIdx in range(maxDeg+1):
         #     if coefsCurTheta[0][kIdx] < 0.0001:
@@ -1195,38 +1207,65 @@ if __name__ == '__main__':
     if quicktest:
         # n = 4
         #
-        testMax = 10
+        testMax = 0
         testResults = np.ones((testMax,7))
-        testDimension = 4
+        testDimension = 3
         nrOfWins = np.zeros(7)
-        nrOfPointsets = 4
-        SizeOfPointSets =6
+        nrOfPointsets = 7
+        SizeOfPointSets = 6
         maxDegAll = 20
+
+        resolutionBase = 201
+        outputResBase = 300
+        weightPolyBase = complexWeightPolyCreator(testDimension)
+        weightIntBase = integratedWeightPolyCreator(testDimension) + 1
+        heighestWeightPointBase = np.sqrt(1 / (2 * (testDimension - 2) + 1))
+        heighestWeightBase = weightPolyBase(heighestWeightPointBase)
+        scaledWeightPolyBase = weightPolyBase / heighestWeightBase
+        cDCBase = SphereBasics.complexDoubleCapv2(testDimension, outputResBase, resolutionBase)
+        radiusSpaceBase = np.linspace(0, 1, outputResBase, endpoint=True)
+
+
+        polyEstCDCBase = Polynomial.fit(radiusSpaceBase, cDCBase, 4 * (testDimension - 1))
+        coefsPolyCDCBase = stripNonSpin(polyEstCDCBase, testDimension, 10 * outputResBase)
+        polyListBase = [createDiskPolyCosineless(testDimension, kIdx, 0) for kIdx in range(maxDegAll + 1)]
+        basePolyBase = sum(polyListBase[kIdx] * coefsPolyCDCBase[kIdx] for kIdx in range(len(coefsPolyCDCBase)))
+
+        bestObjValrelative = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                                maxIter=nrOfPointsets * SizeOfPointSets,
+                                                                maxSetSize=SizeOfPointSets, maxDeg=maxDegAll,
+                                                                uniformCoordinateWise=True, basePoly=basePolyBase)
         for testNr in range(testMax):
 
             TrueRandom = modelMultipleBQP(0, 0, testDimension, 0,
                              maxDegAll, nrOfPoints=SizeOfPointSets, nrOfPointSets=nrOfPointsets)[3]
             bestObjValrelative = iterativeProbabilisticImprovingBPQ(testDimension,
                                                                     maxIter=nrOfPointsets * SizeOfPointSets,
-                                                                    maxSetSize=SizeOfPointSets, maxDeg=maxDegAll)
+                                                                    maxSetSize=SizeOfPointSets, maxDeg=maxDegAll,
+                                                                    basePoly=basePolyBase)
             bestObjValSpread = iterativeProbabilisticImprovingBPQ(testDimension,
                                                                   maxIter=nrOfPointsets * SizeOfPointSets,
                                                                   maxSetSize=SizeOfPointSets,
-                                                                  spreadPoints=True, maxDeg=maxDegAll)
+                                                                  spreadPoints=True, maxDeg=maxDegAll,
+                                                                    basePoly=basePolyBase)
             bestObjValInverse = iterativeProbabilisticImprovingBPQ(testDimension,
                                                                       maxIter=nrOfPointsets * SizeOfPointSets,
                                                                       maxSetSize=SizeOfPointSets,
-                                                                      reverseWeighted=True, maxDeg=maxDegAll)
+                                                                      reverseWeighted=True, maxDeg=maxDegAll,
+                                                                    basePoly=basePolyBase)
 
             bestObjValFlat = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*SizeOfPointSets,
                                                                 maxSetSize=SizeOfPointSets, relativityScale=0,
-                                                                maxDeg=maxDegAll)
+                                                                maxDeg=maxDegAll,
+                                                                    basePoly=basePolyBase)
             bestObjValScaled = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*SizeOfPointSets,
                                                                   maxSetSize=SizeOfPointSets, relativityScale=1,
-                                                                  maxDeg=maxDegAll)
+                                                                  maxDeg=maxDegAll,
+                                                                    basePoly=basePolyBase)
             bestObjValUniform = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*SizeOfPointSets,
                                                                    maxSetSize=SizeOfPointSets,
-                                                                   uniformCoordinateWise=True, maxDeg=maxDegAll)
+                                                                   uniformCoordinateWise=True, maxDeg=maxDegAll,
+                                                                    basePoly=basePolyBase)
 
             testResultArray = np.array([TrueRandom,bestObjValSpread,bestObjValInverse,bestObjValrelative,bestObjValFlat,
                                         bestObjValScaled,bestObjValUniform])
@@ -1236,9 +1275,10 @@ if __name__ == '__main__':
             testResults[testNr]=testResultArray
             print(testResultArray)
             nrOfWins[winner] += 1
-        overalWinner = np.argmin(testResults)
-        print(f"Nr of wins: {nrOfWins} (true random, relative error, flat error, scaled error, uniform coordinate)")
-        print(f"Overal winner: {overalWinner} with Objective Value: {testResults.flatten()[overalWinner]}")
+        if testMax>0:
+            overalWinner = np.argmin(testResults)
+            print(f"Nr of wins: {nrOfWins} (true random, relative error, flat error, scaled error, uniform coordinate)")
+            print(f"Overal winner: {overalWinner} with Objective Value: {testResults.flatten()[overalWinner]}")
 
 
 
