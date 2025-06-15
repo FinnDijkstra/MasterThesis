@@ -203,13 +203,20 @@ def createRandomPointsReal(baseDim, nrPoints, checkForMistakesBool=False):
     return randomPointMatrix
 
 
-def createRandomPointsComplex(baseDim, nrPoints, baseZ=0+0j, checkForMistakesBool=False):
+def createRandomPointsComplex(baseDim, nrPoints, baseZ=0+0j, checkForMistakesBool=False, includeInner=True):
     nrPoints = max(2, nrPoints)
-    baseRad, baseAngle = z2polar(baseZ)
+
     randomPointMatrixRadii = np.zeros((nrPoints, baseDim))
     randomPointMatrixRadii[0][0] = 1
+    if includeInner:
+        baseRad, baseAngle = z2polar(baseZ)
+    else:
+        randomVals = np.random.random(2)
+        baseRad = randomVals[0]
+        baseAngle = 2*np.pi * randomVals[1]
     randomPointMatrixRadii[1][0] = baseRad
     randomPointMatrixRadii[1][1] = 1-baseRad
+
     csDistr = complex_sphere_pdf(a=0, b=1,
                                  name=f'Equal distrubution on complex sphere in R^{baseDim}')
     pdfList = [csDistr(c=baseDim - layerIdx)

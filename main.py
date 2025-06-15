@@ -10,6 +10,11 @@ import random
 import scipy.stats as st
 # import sympy as sym
 import pandas as pd
+import json
+import os
+import datetime
+
+
 
 from matplotlib import pyplot as plt
 
@@ -18,7 +23,9 @@ from line_profiler import LineProfiler
 from numpy.polynomial import Polynomial
 
 from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, \
-    integratedWeightPolyCreator
+    integratedWeightPolyCreator, createRandomPointsComplex
+
+from OrthonormalPolyClasses import Jacobi, Disk, DiskCombi
 
 nrOfVars = 10
 nrOfTests = 200
@@ -433,7 +440,8 @@ def modelMultipleBQP(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax
         for gamma in range(gammaMax):
             for k in range(kMax):
                 # diskPolyValueTensor[gamma][k] = vectorizeRDP(alpha, gamma, k, innerProductMatrix)
-
+                # diskPolyValueTensor[gamma][k] = (createDiskPolyCosineless(complexDimension, k, gamma)(ipmRads) *
+                #                                  np.cos(ipmAngles * gamma))
                 diskPolyValueTensor[gamma][k] = (createDiskPolyCosineless(complexDimension, k, gamma)(ipmRads)*
                                                  np.cos(ipmAngles*gamma))
         charMatricesList.append(charMatrix)
@@ -583,7 +591,8 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                                 startingFacet=0):
     pointSetSize = startingPointset.shape[0]
 
-    startingPolynomial = polyFromCoefs(startingCoefficients, polynomialSet)
+    # startingPolynomial = polyFromCoefs(startingCoefficients, polynomialSet)
+    startingPolynomial = DiskCombi(dim-2,startingCoefficients)
     startingGuess = np.concat([startingPointset.T.real, startingPointset.T.imag])
     flattenedStartingGuess = startingGuess.ravel()
     shapeStartingGuess = startingGuess.shape
@@ -599,6 +608,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
                                                                      1j*S.reshape(shapeStartingGuess)[dim:]))[0])
+
     bestFacet = 0
     sol = startingGuess
     lastImprovement = 0
@@ -607,6 +617,9 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
         nrOfFacets = betas.shape[0]
         relativeSizes = np.max(np.max(np.abs(facetIneqs),axis=1), axis=1)
         for facetNr in range(nrOfFacets):
+            startingLocations = createRandomPointsComplex(dim,6, includeInner=False)
+            startingGuess = np.concat([startingLocations.T.real, startingLocations.T.imag])
+            flattenedStartingGuess = startingGuess.ravel()
             facetIdx = -nrOfFacets + facetNr + startingFacet
             objective = lambda S: betas[facetIdx] - np.sum(
                 np.multiply(facetIneqs[facetIdx],polyVals(S)))
@@ -629,12 +642,13 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                 else:
                     lastImprovement += 1
             finally:
-                if lastImprovement >= 3 and bestFacet < -3:#*(-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2)):
+                if lastImprovement >= 3 and bestFacet < -3:  # *(-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2)):
                     break
         if bestFacet < 0:
             return True, (sol[:dim]+1j*sol[dim:]).T, (facetIdx+1) % nrOfFacets
         else:
             return False, startingGuess.T, (facetIdx+1) % nrOfFacets
+
 
 def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIter=10, maxDeg=0, relativityScale=-1,
                                        maxSetSize=10, uniformCoordinateWise=False,
@@ -946,7 +960,16 @@ def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIt
         resultingpolyList.append(polyVcur)
         # if bestObjVal < (1/2)**(dim-1):
         #     print("objValError")
-    return bestObjVal
+    inputParameters = {"dim":dim, "resolution":resolution, "outputRes":outputRes, "maxIter":maxIter,
+                       "maxDeg":maxDeg, "relativityScale":relativityScale, "maxSetSize":maxSetSize,
+                       "uniformCoordinateWise":uniformCoordinateWise, "reverseWeighted":reverseWeighted,
+                       "spreadPoints":spreadPoints, "basePoly":basePoly}
+    usedPointSets = fullPointSets + [listOfPointSets[-1]]
+    usedPointSetDict = {f"point set {setNr}": usedPointSets[setNr] for setNr in range(len(usedPointSets))}
+    outputDict = {"objective":bestObjVal, "coeficients disk polynomials list":coefThetaList,
+                  "resulting polynomials list":resultingpolyList, "used point sets":usedPointSetDict,
+                  "input parameters":inputParameters}
+    return outputDict
 
 
 
@@ -1195,15 +1218,33 @@ def facetReader(filename):
 # end
 
 
+def save_test_result(testSuperDict, fileName):
+    # Load existing data
+    with open(fileName, "r") as f:
+        data = json.load(f)
+
+    # Add new result
+    data.update(testSuperDict)
+
+    # Save updated dictionary
+    with open(fileName, "w") as f:
+        json.dump(data, f, indent=2)
+
+
 def quickJumpNavigator():
     return "ok"
 
 
 if __name__ == '__main__':
+    testSaveLocation = "TestResults_"+datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
+    if not os.path.exists(testSaveLocation):
+        with open(testSaveLocation, "w") as f:
+            json.dump({}, f)
     quicktest = True
     plotBool = False
     printBool = False
     validFacets, ineqArray, betaArray = facetReader("bqp6.dat")
+
     if quicktest:
         # n = 4
         #
@@ -1231,10 +1272,13 @@ if __name__ == '__main__':
         polyListBase = [createDiskPolyCosineless(testDimension, kIdx, 0) for kIdx in range(maxDegAll + 1)]
         basePolyBase = sum(polyListBase[kIdx] * coefsPolyCDCBase[kIdx] for kIdx in range(len(coefsPolyCDCBase)))
 
-        bestObjValrelative = iterativeProbabilisticImprovingBPQ(testDimension,
+        bestObjValStart = iterativeProbabilisticImprovingBPQ(testDimension,
                                                                 maxIter=nrOfPointsets * SizeOfPointSets,
                                                                 maxSetSize=SizeOfPointSets, maxDeg=maxDegAll,
-                                                                uniformCoordinateWise=True, basePoly=basePolyBase)
+                                                                basePoly=basePolyBase, uniformCoordinateWise=True)
+        testResultDict = {"StartingTest":bestObjValStart}
+        save_test_result(testResultDict, testSaveLocation)
+        del testResultDict, bestObjValStart
         for testNr in range(testMax):
 
             TrueRandom = modelMultipleBQP(0, 0, testDimension, 0,
@@ -1267,18 +1311,25 @@ if __name__ == '__main__':
                                                                    uniformCoordinateWise=True, maxDeg=maxDegAll,
                                                                     basePoly=basePolyBase)
 
-            testResultArray = np.array([TrueRandom,bestObjValSpread,bestObjValInverse,bestObjValrelative,bestObjValFlat,
-                                        bestObjValScaled,bestObjValUniform])
-            objErrorMask = (testResultArray < (1/2)**(testDimension-1))
-            testResultArray[objErrorMask] = 1/testDimension
-            winner = np.argmin(testResultArray)
-            testResults[testNr]=testResultArray
-            print(testResultArray)
-            nrOfWins[winner] += 1
-        if testMax>0:
-            overalWinner = np.argmin(testResults)
-            print(f"Nr of wins: {nrOfWins} (true random, relative error, flat error, scaled error, uniform coordinate)")
-            print(f"Overal winner: {overalWinner} with Objective Value: {testResults.flatten()[overalWinner]}")
+            testResultDict = {f"Random{testNr}": TrueRandom, f"Relative{testNr}": bestObjValrelative,
+                              f"Spread{testNr}": bestObjValSpread, f"Inverse{testNr}": bestObjValInverse,
+                              f"Flat{testNr}": bestObjValFlat,f"Scaled{testNr}": bestObjValScaled,
+                              f"Uniform{testNr}": bestObjValUniform}
+            save_test_result(testResultDict, testSaveLocation)
+            del testResultDict, TrueRandom, bestObjValrelative, bestObjValSpread,\
+                bestObjValInverse, bestObjValFlat, bestObjValScaled,bestObjValUniform
+             # testResultArray = np.array([TrueRandom,bestObjValSpread,bestObjValInverse,bestObjValrelative,bestObjValFlat,
+             #                             bestObjValScaled,bestObjValUniform])
+            # objErrorMask = (testResultArray < (1/2)**(testDimension-1))
+            # testResultArray[objErrorMask] = 1/testDimension
+            # winner = np.argmin(testResultArray)
+            # testResults[testNr]=testResultArray
+            # print(testResultArray)
+            # nrOfWins[winner] += 1
+        # if testMax>0:
+        #     overalWinner = np.argmin(testResults)
+        #     print(f"Nr of wins: {nrOfWins} (true random, relative error, flat error, scaled error, uniform coordinate)")
+        #     print(f"Overal winner: {overalWinner} with Objective Value: {testResults.flatten()[overalWinner]}")
 
 
 
