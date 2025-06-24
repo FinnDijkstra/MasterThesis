@@ -215,7 +215,7 @@ def createRandomPointsComplex(baseDim, nrPoints, baseZ=0+0j, checkForMistakesBoo
         baseRad = randomVals[0]
         baseAngle = 2*np.pi * randomVals[1]
     randomPointMatrixRadii[1][0] = baseRad
-    randomPointMatrixRadii[1][1] = 1-baseRad
+    randomPointMatrixRadii[1][1] = np.sqrt(1-baseRad**2)
 
     csDistr = complex_sphere_pdf(a=0, b=1,
                                  name=f'Equal distrubution on complex sphere in R^{baseDim}')

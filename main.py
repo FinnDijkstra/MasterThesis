@@ -604,10 +604,14 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                                        flattenedStartingGuess.reshape(shapeStartingGuess)[: dim] + 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
                                                                                            dim:])
     validIneqs, facetIneqs, betas = facetReader("bqp6.dat")
-    polyVals = lambda S:startingPolynomial(z2polar((S.reshape(shapeStartingGuess)[:dim]-
+    recomplexify = lambda S: ((S.reshape(shapeStartingGuess)[:dim]-
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
-                                                                     1j*S.reshape(shapeStartingGuess)[dim:]))[0])
+                                                                     1j*S.reshape(shapeStartingGuess)[dim:]))
+    polyVals = lambda S:startingPolynomial(*(z2polar((S.reshape(shapeStartingGuess)[:dim]-
+                                            1j*S.reshape(shapeStartingGuess)[dim:]).T @
+                                                                    (S.reshape(shapeStartingGuess)[:dim]+
+                                                                     1j*S.reshape(shapeStartingGuess)[dim:]))))
 
     bestFacet = 0
     sol = startingGuess
@@ -617,7 +621,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
         nrOfFacets = betas.shape[0]
         relativeSizes = np.max(np.max(np.abs(facetIneqs),axis=1), axis=1)
         for facetNr in range(nrOfFacets):
-            startingLocations = createRandomPointsComplex(dim,6, includeInner=False)
+            startingLocations = createRandomPointsComplex(dim,6, includeInner=False)[0]
             startingGuess = np.concat([startingLocations.T.real, startingLocations.T.imag])
             flattenedStartingGuess = startingGuess.ravel()
             facetIdx = -nrOfFacets + facetNr + startingFacet
@@ -629,7 +633,8 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                     objective, flattenedStartingGuess,
                     method='trust-constr',
                     constraints={'type': 'eq', 'fun': constraint},
-                    tol=1e-8
+                    tol=1e-8,
+                    options={"maxiter":500}
                 )
             except:
                 lastImprovement += 1
@@ -642,7 +647,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                 else:
                     lastImprovement += 1
             finally:
-                if lastImprovement >= 3 and bestFacet < -3:  # *(-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2)):
+                if lastImprovement >= 3 and bestFacet < -1.5 * (-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2)):
                     break
         if bestFacet < 0:
             return True, (sol[:dim]+1j*sol[dim:]).T, (facetIdx+1) % nrOfFacets
@@ -931,10 +936,16 @@ def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIt
                                                 maxDeg, listOfPointSets=[listOfPointSets[iterationNr+1]]+fullPointSets)
         if listOfPointSets[iterationNr+1].shape[0]==6:
             foundBool, ineqPointset, facetStart = facetInequalityBQPGammaless(dim, listOfPointSets[iterationNr+1], fullPointSets,
-                                                                  unscaledCoefsTheta[0],polyList,startingFacet=facetStart)
+                                                                  unscaledCoefsTheta,polyList,startingFacet=facetStart)
             if foundBool:
                 _,_,coefsFacetTheta, facetObjVal,_ = modelMultipleBQP(0, 0, dim, 0,
                                                             maxDeg, listOfPointSets=[ineqPointset] + fullPointSets)
+                if len(fullPointSets)>0:
+                    inputPointSets = [ineqPointset] + fullPointSets
+                    combinedPointSets = [np.concat([inputPointSets[PSidx-1], inputPointSets[PSidx]])
+                                         for PSidx in range(len(inputPointSets))]
+                    _, _, coefsFacetThetav2, facetObjValv2, _ = modelMultipleBQP(0, 0, dim, 0,
+                                                                             maxDeg, listOfPointSets=combinedPointSets)
                 print(f"facet ineqs gave us {facetObjVal}, instead of {curObjVal}")
                 if facetObjVal < curObjVal:
                     curObjVal = facetObjVal

@@ -98,18 +98,18 @@ class DiskCombi:
 
 
 
-diskPoly = Disk(1,2,3)
-# print(diskPoly(np.sqrt(1/2),0,2))
-
-coefArray = np.array([[0.5,0,0.25],[0,0,0],[0,0.25,0]])
-# coefArray = np.random.random((3,3))
-coefArray /= np.sum(coefArray)
-diskCombi = DiskCombi(1,coefArray)
-# print(diskCombi(np.sqrt(1/2),0))
-
-innerProductArray = np.linspace(0,1,5,endpoint=True)
-sqrtIPA = np.sqrt(innerProductArray)
-angleArray = np.linspace(0, 3 * np.pi, 8, endpoint=True)
-outputArray = diskCombi(sqrtIPA, angleArray)
-print(outputArray)
+# diskPoly = Disk(1,2,3)
+# # print(diskPoly(np.sqrt(1/2),0,2))
+#
+# coefArray = np.array([[0.5,0,0.25],[0,0,0],[0,0.25,0]])
+# # coefArray = np.random.random((3,3))
+# coefArray /= np.sum(coefArray)
+# diskCombi = DiskCombi(1,coefArray)
+# # print(diskCombi(np.sqrt(1/2),0))
+#
+# innerProductArray = np.linspace(0,1,5,endpoint=True)
+# sqrtIPA = np.sqrt(innerProductArray)
+# angleArray = np.linspace(0, 3 * np.pi, 8, endpoint=True)
+# outputArray = diskCombi(sqrtIPA, angleArray)
+# print(outputArray)
 
