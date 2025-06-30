@@ -2,6 +2,7 @@ import numpy as np
 import scipy as sp
 from math import comb
 
+import plot2dCharts
 
 
 class Jacobi:
@@ -63,8 +64,24 @@ class Disk:
         theta = np.asarray(theta)
         if r.shape != theta.shape:
             rMesh, thetaMesh = np.meshgrid(r, theta)
-            return (np.power(rMesh, self.gamma) * np.cos(thetaMesh * self.gamma) *
-                    self.Jacobi.calcNormalizedAtX(2 * (rMesh ** 2) - 1))
+            jacobiVals = self.Jacobi.calcNormalizedAtX(2 * (r ** 2) - 1)
+            # thetaShape = tuple(1 for _ in range(len(theta.shape)))
+            # jacobiReshape = thetaShape + r.shape + (self.kMax+1,)
+            # jacobiValsV2 = jacobiVals.T.reshape(jacobiReshape)
+            # rParts = np.power(rMesh, self.gamma)*jacobiValsV2
+            # outputsTry1 = rParts * np.cos(thetaMesh * self.gamma)
+            # thetaShape = tuple(1 for _ in range(len(theta.shape)))
+            # jacobiReshape = jacobiVals.shape + thetaShape
+            # jacobiValsV2 = jacobiVals.reshape(jacobiReshape)
+            outputVals = np.zeros((self.kMax+1,)+rMesh.shape)
+            for curK in range(self.kMax + 1):
+                outputVals[curK] = (np.power(rMesh, self.gamma) *
+                                        np.cos(thetaMesh * self.gamma) * jacobiVals[curK])
+            # outputVals = np.array(outputValsList)
+            x=1
+            return outputVals
+            # return (np.power(rMesh, self.gamma) * np.cos(thetaMesh * self.gamma) *jacobiValsV2
+            #         )
         else:
             return np.power(r,self.gamma) * np.cos(theta*self.gamma) * self.Jacobi.calcNormalizedAtX(2*(r**2) - 1)
 
@@ -83,7 +100,7 @@ class DiskCombi:
         if r.shape != theta.shape:
             rMesh, thetaMesh = np.meshgrid(r, theta)
             meshDims = len(rMesh.shape)
-            solArray = np.array([diskInst.calcAtRTheta(rMesh, thetaMesh) for diskInst in self.DiskList])
+            solArray = np.array([diskInst.calcAtRTheta(r, theta) for diskInst in self.DiskList])
         else:
             meshDims = len(r.shape)
             solArray = np.array([diskInst.calcAtRTheta(r, theta) for diskInst in self.DiskList])
@@ -95,8 +112,120 @@ class DiskCombi:
         desiredCoefsArray = np.reshape(self.coefficientArray, tuple(coefsDesiredShape), copy=True)
         return np.sum(np.multiply(solArray, desiredCoefsArray), axis=solDims)
 
+    def allValues(self, r, theta):
+        r = np.asarray(r)
+        theta = np.asarray(theta)
+        if r.shape != theta.shape:
+            rMesh, thetaMesh = np.meshgrid(r, theta)
+            solArray = np.array([diskInst.calcAtRTheta(r, theta) for diskInst in self.DiskList])
+        else:
+            solArray = np.array([diskInst.calcAtRTheta(r, theta) for diskInst in self.DiskList])
+        # for gamma in range(self.gammaMax+1):
+        #     for k in range(self.kMax+1):
+        #         for ridx in range(0):
+        #             for thetaidx in range((theta.shape[0] - 1) / 2):
+        #                 if solArray[gamma,k,ridx,thetaidx] != solArray[gamma,k,ridx,-1-thetaidx]:
+        #                     print("bad pair")
+        return solArray
 
 
+    def findMinimalParams(self,r,theta):
+        r = np.asarray(r)
+        theta = np.asarray(theta)
+        rShape = r.shape
+        thetaShape = theta.shape
+        kNr = self.kMax+1
+        gammaNr = self.gammaMax+1
+        solOutputs = self.allValues(r,theta)
+        solOutputsReshaped = solOutputs.reshape((gammaNr*kNr,) +thetaShape+ rShape)
+        flatMin = np.min(solOutputsReshaped, axis=0)
+        flatMinIndices = np.zeros((theta.shape[0],r.shape[0]),dtype=int)
+        for ridx in range(r.shape[0]):
+            for thetaidx in range(theta.shape[0]):
+                curMin = flatMin[thetaidx,ridx]
+                solsCur = solOutputsReshaped[:,thetaidx,ridx]
+                validIndices = np.argwhere(solsCur<curMin+1e-10)
+                minimalIndex = np.min(validIndices)
+                flatMinIndices[thetaidx,ridx]=minimalIndex
+        # validIndices = np.argwhere(solOutputsReshaped<flatMin+1e-10)
+        # flatMinIndices = np.min(validIndices,axis=0)
+        gammaIndices = flatMinIndices // kNr
+        kIndices = flatMinIndices % kNr
+        # kIndices[:,0] = 0
+        # gammaIndices[0,0] = 0
+        for ridx in range(r.shape[0]):
+            for thetaidx in range(1,(theta.shape[0] - 1) // 2):
+                curR = r[ridx]
+                curTheta = theta[thetaidx]
+                curThetaMin = theta[-1-thetaidx]
+                gamma1 = gammaIndices[thetaidx, ridx]
+                gamma2 = gammaIndices[-1-thetaidx, ridx]
+                k1 = kIndices[thetaidx, ridx]
+                k2 = kIndices[-1-thetaidx, ridx]
+                gamma3 = gamma1-gamma2
+                k3 = k1-k2
+                desiredVal = solOutputsReshaped[flatMinIndices[thetaidx,ridx], thetaidx,ridx]
+                desiredVal2 = solOutputsReshaped[flatMinIndices[-1-thetaidx,ridx], -1-thetaidx,ridx]
+                leftVal = solOutputs[gamma1,k1,thetaidx,ridx]
+                rightVal = solOutputs[gamma2,k2,-1-thetaidx,ridx]
+                x=1
+                if gamma1 != gamma2 or k1 != k2:
+                    print("bad pair")
+        return gammaIndices, kIndices
+
+
+
+class FastRadialEstimator:
+    def __init__(self, slow_function, resolution):
+        self.slow_function = slow_function  # Callable: f(r), r in [0,1]
+        self.resolution = resolution
+
+        # Precompute points at evenly spaced radii
+        self.r_grid = np.linspace(0, 1, resolution, endpoint=True)
+        self.values = self.slow_function(self.r_grid,0)[0]
+
+    def __call__(self, r_input):
+        r_input = np.asarray(r_input)
+        r_abs = np.abs(r_input)
+        # Clip inputs to [0, 1] to stay within interpolation range
+        r_clipped = np.clip(r_abs, 0, 1)
+
+        # Normalize to get fractional index
+        scaled = r_clipped * (self.resolution - 1)
+        i = np.clip(np.floor(scaled).astype(int),0, self.resolution - 1)
+        idx2 = np.clip(np.ceil(scaled).astype(int), 0, self.resolution - 1)
+        frac = scaled - i
+
+        # Avoid going out of bounds on the upper edge
+        # i = np.clip(i, 0, self.resolution - 1)
+
+        # Interpolate linearly
+        result = (1 - frac) * self.values[i] + frac * self.values[idx2]
+        return result
+
+
+if __name__ == "__main__":
+    rRes = 5 + 1
+    thetaRes = 6 + 1
+    rGrid = np.linspace(1, 0, rRes, endpoint=True)
+    r2Grid = np.sqrt(rGrid)
+    thetaGrid = np.linspace(0, 2 * np.pi, thetaRes, endpoint=True)
+    rMesh,thetaMesh  = np.meshgrid(rGrid, thetaGrid)
+    r2Mesh, theta2Mesh = np.meshgrid(r2Grid, thetaGrid)
+    cosMesh = np.cos(thetaMesh)
+    sinMesh = np.sin(thetaMesh)
+    xMesh = cosMesh*rMesh
+    yMesh = sinMesh*rMesh
+    coefArray = np.ones((50, 20)) / 4000
+    totalDisk = DiskCombi(0, coefArray)
+    # bestGamma, bestK = totalDisk.findMinimalParams(rGrid, thetaGrid)
+    bestGamma, bestK = totalDisk.findMinimalParams(r2Grid,thetaGrid)
+    # plot2dCharts.groupedPolarPlot(rMesh, thetaMesh, bestGamma, bestK, 5, 5)
+    plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10)
+    bestGammaMask = (bestGamma>0)
+    bestKMask = (bestK >0)
+    print(np.sum(bestKMask*bestGammaMask))
+    x=1
 
 # diskPoly = Disk(1,2,3)
 # # print(diskPoly(np.sqrt(1/2),0,2))
@@ -112,4 +241,3 @@ class DiskCombi:
 # angleArray = np.linspace(0, 3 * np.pi, 8, endpoint=True)
 # outputArray = diskCombi(sqrtIPA, angleArray)
 # print(outputArray)
-

@@ -26,7 +26,7 @@ from numpy.polynomial import Polynomial
 from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, \
     integratedWeightPolyCreator, createRandomPointsComplex
 
-from OrthonormalPolyClasses import Jacobi, Disk, DiskCombi
+from OrthonormalPolyClasses import Jacobi, Disk, DiskCombi, FastRadialEstimator
 
 nrOfVars = 10
 nrOfTests = 200
@@ -627,10 +627,10 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
                                                                      1j*S.reshape(shapeStartingGuess)[dim:]))
-    polyVals = lambda S:startingPolynomial(*(z2polar((S.reshape(shapeStartingGuess)[:dim]-
+    polyVals = lambda S:startingPolynomial((z2polar((S.reshape(shapeStartingGuess)[:dim]-
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
-                                                                     1j*S.reshape(shapeStartingGuess)[dim:]))))
+                                                                     1j*S.reshape(shapeStartingGuess)[dim:])))[0])
 
     bestFacet = 0
     sol = startingGuess
@@ -709,7 +709,8 @@ def parrallelFacetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, s
     pointSetSize = startingPointset.shape[0]
 
     # startingPolynomial = polyFromCoefs(startingCoefficients, polynomialSet)
-    startingPolynomial = DiskCombi(dim-2,startingCoefficients)
+    startingPolynomialv0 = DiskCombi(dim-2,startingCoefficients)
+    startingPolynomial = FastRadialEstimator(startingPolynomialv0, 1000001)
     startingGuess = np.concat([startingPointset.T.real, startingPointset.T.imag])
     flattenedStartingGuess = startingGuess.ravel()
     shapeStartingGuess = startingGuess.shape
@@ -1382,6 +1383,40 @@ def quickJumpNavigator():
 
 
 if __name__ == '__main__':
+    charMatrix = characteristicMatrix(6)
+    bqpVerts = np.zeros((64, 6, 6))
+    for idx in range(64):
+        bqpVerts[idx] = np.outer(charMatrix.T[idx], charMatrix.T[idx])
+
+    maskMult = np.ones(64, dtype=bool)
+    maskMult[0] = False
+    for pwr in range(6):
+        maskMult[2 ** pwr] = False
+
+    multBqpVert = bqpVerts[maskMult]
+
+    multBqpVertFlat = multBqpVert.reshape((57, 36))
+    orthBQP = np.zeros_like(multBqpVertFlat)
+    orthBQP[0] = multBqpVertFlat[0]
+    skipThisVert = np.zeros(57,dtype=bool)
+    for idx1 in range(1, 57):
+        curVec = multBqpVertFlat[idx1].copy()
+        for idx2 in range(idx1):
+            if not skipThisVert[idx2]:
+                compVec = orthBQP[idx2]
+                compSize = np.dot(compVec, compVec)
+                curSize = np.dot(compVec, curVec)
+                curVec -= (curSize / compSize) * compVec
+        curVecMask = (np.abs(curVec)>1e-8)
+        if np.max(curVecMask) == True:
+            minCurNonzero = np.min(np.abs(curVec[curVecMask]))
+            curVecScaled = np.zeros_like(curVec)
+            curVecScaled[curVecMask] = curVec[curVecMask]/minCurNonzero
+            orthBQP[idx1] = curVecScaled
+        else:
+            skipThisVert[idx1] = True
+
+
     testSaveLocation = "TestResults_"+datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
     if not os.path.exists(testSaveLocation):
         with open(testSaveLocation, "w") as f:
