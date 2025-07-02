@@ -140,38 +140,66 @@ class DiskCombi:
         solOutputsReshaped = solOutputs.reshape((gammaNr*kNr,) +thetaShape+ rShape)
         flatMin = np.min(solOutputsReshaped, axis=0)
         flatMinIndices = np.zeros((theta.shape[0],r.shape[0]),dtype=int)
+        minVals = np.zeros_like(flatMinIndices, dtype=np.float64)
+        # trustableRadius = np.ones_like(r,dtype=bool)
+        # trustableAngles = np.ones_like(theta,dtype=bool)
+        invalidCoordsCounter = 0
         for ridx in range(r.shape[0]):
             for thetaidx in range(theta.shape[0]):
                 curMin = flatMin[thetaidx,ridx]
+
                 solsCur = solOutputsReshaped[:,thetaidx,ridx]
                 validIndices = np.argwhere(solsCur<curMin+1e-10)
                 minimalIndex = np.min(validIndices)
-                flatMinIndices[thetaidx,ridx]=minimalIndex
+                flatMinIndices[thetaidx,ridx] = minimalIndex
+
+                if curMin > -1e-2:
+                    invalidCoordsCounter += 1
+                if ridx == 0:
+                    curMin = -1
+                minVals[thetaidx, ridx] = curMin
+        flat_sorted = np.sort(minVals.ravel())
+
+        # Determine the (x+1)th largest value
+        clip_value = flat_sorted[-max(invalidCoordsCounter+1,(r.shape[0]*theta.shape[0]//10000 + 1))]
+
+        # Clip top x values to the (x+1)th value
+        minVals = np.minimum(minVals, clip_value)
+
+
+        # trustAbleArray = trustableAngles[:,None] | trustableRadius[None,:]
+        # clipForMin = np.max(minVals[trustAbleArray])
+        # untrustableArray = ~trustAbleArray
+        # # untrustableRadius = ~trustableRadius
+        # minVals[untrustableArray] = np.clip(minVals[untrustableArray],-1,clipForMin)
+
         # validIndices = np.argwhere(solOutputsReshaped<flatMin+1e-10)
         # flatMinIndices = np.min(validIndices,axis=0)
         gammaIndices = flatMinIndices // kNr
         kIndices = flatMinIndices % kNr
         # kIndices[:,0] = 0
         # gammaIndices[0,0] = 0
-        for ridx in range(r.shape[0]):
-            for thetaidx in range(1,(theta.shape[0] - 1) // 2):
-                curR = r[ridx]
-                curTheta = theta[thetaidx]
-                curThetaMin = theta[-1-thetaidx]
-                gamma1 = gammaIndices[thetaidx, ridx]
-                gamma2 = gammaIndices[-1-thetaidx, ridx]
-                k1 = kIndices[thetaidx, ridx]
-                k2 = kIndices[-1-thetaidx, ridx]
-                gamma3 = gamma1-gamma2
-                k3 = k1-k2
-                desiredVal = solOutputsReshaped[flatMinIndices[thetaidx,ridx], thetaidx,ridx]
-                desiredVal2 = solOutputsReshaped[flatMinIndices[-1-thetaidx,ridx], -1-thetaidx,ridx]
-                leftVal = solOutputs[gamma1,k1,thetaidx,ridx]
-                rightVal = solOutputs[gamma2,k2,-1-thetaidx,ridx]
-                x=1
-                if gamma1 != gamma2 or k1 != k2:
-                    print("bad pair")
-        return gammaIndices, kIndices
+
+        # for ridx in range(r.shape[0]):
+        #     for thetaidx in range(1,(theta.shape[0] - 1) // 2):
+        #         curR = r[ridx]
+        #         curTheta = theta[thetaidx]
+        #         curThetaMin = theta[-1-thetaidx]
+        #         gamma1 = gammaIndices[thetaidx, ridx]
+        #         gamma2 = gammaIndices[-1-thetaidx, ridx]
+        #         k1 = kIndices[thetaidx, ridx]
+        #         k2 = kIndices[-1-thetaidx, ridx]
+        #         gamma3 = gamma1-gamma2
+        #         k3 = k1-k2
+        #         desiredVal = solOutputsReshaped[flatMinIndices[thetaidx,ridx], thetaidx,ridx]
+        #         # desiredVal2 = solOutputsReshaped[flatMinIndices[-1-thetaidx,ridx], -1-thetaidx,ridx]
+        #         # leftVal = solOutputs[gamma1,k1,thetaidx,ridx]
+        #         # rightVal = solOutputs[gamma2,k2,-1-thetaidx,ridx]
+        #
+        #         x=1
+        #         if gamma1 != gamma2 or k1 != k2:
+        #             print("bad pair")
+        return gammaIndices, kIndices, minVals
 
 
 
@@ -205,9 +233,9 @@ class FastRadialEstimator:
 
 
 if __name__ == "__main__":
-    rRes = 5 + 1
-    thetaRes = 6 + 1
-    rGrid = np.linspace(1, 0, rRes, endpoint=True)
+    rRes = 50 + 1
+    thetaRes = 60 + 1
+    rGrid = np.linspace(0, 1, rRes, endpoint=True)
     r2Grid = np.sqrt(rGrid)
     thetaGrid = np.linspace(0, 2 * np.pi, thetaRes, endpoint=True)
     rMesh,thetaMesh  = np.meshgrid(rGrid, thetaGrid)
@@ -217,11 +245,14 @@ if __name__ == "__main__":
     xMesh = cosMesh*rMesh
     yMesh = sinMesh*rMesh
     coefArray = np.ones((50, 20)) / 4000
-    totalDisk = DiskCombi(0, coefArray)
+    complexDimension = 3
+    totalDisk = DiskCombi(complexDimension-2, coefArray)
     # bestGamma, bestK = totalDisk.findMinimalParams(rGrid, thetaGrid)
-    bestGamma, bestK = totalDisk.findMinimalParams(r2Grid,thetaGrid)
+    bestGamma, bestK, minimalValues = totalDisk.findMinimalParams(r2Grid,thetaGrid)
     # plot2dCharts.groupedPolarPlot(rMesh, thetaMesh, bestGamma, bestK, 5, 5)
-    plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10)
+    graphTitle = "Parameters for best disk polynomial\n" + fr"in $\mathbb{{C}}^{{{complexDimension}}}$ "
+    plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10,graphTitle,
+                                  legendBool=False, minVals = minimalValues, plot3dBool = True, comDim=complexDimension)
     bestGammaMask = (bestGamma>0)
     bestKMask = (bestK >0)
     print(np.sum(bestKMask*bestGammaMask))

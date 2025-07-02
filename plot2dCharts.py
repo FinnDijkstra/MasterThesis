@@ -9,6 +9,8 @@ import matplotlib.patheffects as path_effects
 import numpy as np
 import scipy as sp
 from scipy.integrate import quad
+from matplotlib.colors import LightSource
+import matplotlib.tri as mtri
 from matplotlib import cm
 labelDict = {"RadAng":["Radius","Angle", "Result (log of -thetapart)"], "RadGamma":["Radius","Gamma", "Result"],
              "JacobiSol":["Innerproduct","Height", "Result"]}
@@ -21,7 +23,8 @@ maxDegree = 10
 
 
 
-def groupedPolarPlot(yMesh,xMesh,bestGammaArray,bestKArray,gammaSteps,kSteps):
+def groupedPolarPlot(rMesh,thetaMesh,bestGammaArray,bestKArray,gammaSteps,kSteps,titleString,
+                     legendBool=True, plot3dBool=False, minVals=0,comDim=2):
     fig, ax = plt.subplots(figsize=(6, 6), dpi=500, subplot_kw={'projection': 'polar'})
     ax.set_aspect('equal')
     # ax.axis('off')
@@ -46,8 +49,11 @@ def groupedPolarPlot(yMesh,xMesh,bestGammaArray,bestKArray,gammaSteps,kSteps):
         gammaLeft = gammaLeft^gammaThisValMask
     listPerGamma.append(gammaLeft)
     # Fill regions
-    minInt = 0.5
-    counteredThisPoint = np.zeros_like(xMesh,dtype=bool)
+    minInt = 0.6
+    counteredThisPoint = np.zeros_like(thetaMesh,dtype=bool)
+
+    fullColours = {}
+
     kColours = {}
     for kVal in range(1,kSteps+1):
         kIntensity = (1-minInt)*((kVal-1)/(kSteps-1)) + minInt
@@ -55,11 +61,12 @@ def groupedPolarPlot(yMesh,xMesh,bestGammaArray,bestKArray,gammaSteps,kSteps):
         onlyKThis = kValMask*onlyK
         counteredThisPoint |= onlyKThis
         kShift = ((kVal-1)/(kSteps-1))
-        curColour = (1*kIntensity, 0.5*np.power(kIntensity * kShift,2), 0.2*kIntensity)
+        curColour = (1*kIntensity, 0.5*np.power(kIntensity * kShift,1), 0.2*kIntensity)
         kColours[kVal] = curColour
-        ax.contourf(xMesh, yMesh, onlyKThis.astype(float), levels=[0.5, 1.5], colors=[curColour],
+        fullColours[(kVal, 0)] = curColour
+        ax.contourf(thetaMesh, rMesh, onlyKThis.astype(float), levels=[0.5, 1.5], colors=[curColour],
                     alpha=1)
-        ax.contour(xMesh, yMesh, onlyKThis.astype(float), levels=[0.5, 1.5], colors=[(0.5 * kIntensity,
+        ax.contour(thetaMesh, rMesh, onlyKThis.astype(float), levels=[0.5, 1.5], colors=[(0.5 * kIntensity,
                                                                                       0.1*kIntensity,
                                                                                       0.1*kIntensity)],
                     alpha=1, linewidths=0.8)
@@ -69,11 +76,12 @@ def groupedPolarPlot(yMesh,xMesh,bestGammaArray,bestKArray,gammaSteps,kSteps):
         gammaValMask = listPerGamma[gammaVal-1]
         onlyGammaThis = gammaValMask * onlyGamma
         counteredThisPoint |= onlyGammaThis
-        curColour = (0.6*gammaIntensity, 0.1*gammaIntensity, 1*np.square(gammaIntensity))
+        curColour = (0.6*gammaIntensity, 0.1*gammaIntensity, 1*np.power(gammaIntensity,1))
         gammaColours[gammaVal] = curColour
-        ax.contourf(xMesh, yMesh, onlyGammaThis.astype(float), levels=[0.5, 1.5],
+        fullColours[(0, gammaVal)] = curColour
+        ax.contourf(thetaMesh, rMesh, onlyGammaThis.astype(float), levels=[0.5, 1.5],
                     colors=[curColour], alpha=1)
-        ax.contour(xMesh, yMesh, onlyGammaThis.astype(float), levels=[0.5, 1.5],
+        ax.contour(thetaMesh, rMesh, onlyGammaThis.astype(float), levels=[0.5, 1.5],
                     colors=[(0.3 * gammaIntensity, 0.05*gammaIntensity, 0.5 * np.power(gammaIntensity,2))], alpha=1, linewidths=0.8)
     combinedColours = {}
     for kVal in range(1, kSteps+1):
@@ -100,16 +108,12 @@ def groupedPolarPlot(yMesh,xMesh,bestGammaArray,bestKArray,gammaSteps,kSteps):
             curColour = (1*(kIntensity-minimalIntensity), (2*kIntensity + 4*minimalIntensity)/3,
                                              1*(gammaIntensity-minimalIntensity))
             combinedColours[(kVal, gammaVal)] = curColour
-            ax.contourf(xMesh, yMesh, curMask.astype(float), levels=[0.5, 1.5], colors=[curColour], alpha=1)
-            ax.contour(xMesh, yMesh, curMask.astype(float), levels=[0.5, 1.5],
+            fullColours[(kVal, gammaVal)] = curColour
+            ax.contourf(thetaMesh, rMesh, curMask.astype(float), levels=[0.5, 1.5], colors=[curColour], alpha=1)
+            ax.contour(thetaMesh, rMesh, curMask.astype(float), levels=[0.5, 1.5],
                         colors=[(1 * (kIntensity - minimalIntensity)/2,
                                  (kIntensity + 3*minimalIntensity)/4,
                                  1 * (gammaIntensity - minimalIntensity)/2)], alpha=1, linewidths=0.8)
-    # ax.contourf(X, Y, G1b.astype(float), levels=[0.5, 1.5], colors='#cc0000', alpha=0.8)
-    # ax.contourf(X, Y, G1c.astype(float), levels=[0.5, 1.5], colors='#800000', alpha=0.8)
-    # ax.contourf(X, Y, G3.astype(float), levels=[0.5, 1.5], colors='green', alpha=0.6)
-    # ax.contourf(X, Y, G2.astype(float), levels=[0.5, 1.5], colors='blue', alpha=0.6)
-
     # Annotate using theta ∈ [0, π] only, with G₁.a in white
     # for name, (x, y) in region_labels_upper_half.items():
     #     color = 'white'
@@ -117,7 +121,17 @@ def groupedPolarPlot(yMesh,xMesh,bestGammaArray,bestKArray,gammaSteps,kSteps):
     #                    color=color, fontsize=10, ha='center', va='center')
     #     text.set_path_effects([path_effects.withStroke(linewidth=3, foreground='black')])
 
-    # ax.set_title("Group Labels (Upper-Half Weighted, G₁.a in White)")
+
+
+
+    # Fill in (k=0, gamma=0)
+    fullColours[(0, 0)] = (0.5 * minInt, 0.05 * minInt, 0.05 * minInt)
+
+    text_obj =ax.set_title(titleString,fontsize=18, fontweight="light")
+
+    text_obj.set_path_effects([
+        path_effects.withStroke(linewidth=0.5, foreground='black')
+    ])
     # print(bestGammaArray[~counteredThisPoint])
     # print(bestKArray[~counteredThisPoint])
     theta_ticks = [
@@ -175,46 +189,153 @@ def groupedPolarPlot(yMesh,xMesh,bestGammaArray,bestKArray,gammaSteps,kSteps):
             path_effects.withStroke(linewidth=3, foreground='black')
         ])
     ax.grid(alpha=0.525)
+    plt.tight_layout()
     plt.show()
+    if legendBool:
+        # Plot the legend grid
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax.axis('off')
 
-    # Plot the legend grid
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.axis('off')
+        # Plot the color grid
+        for iK in range(1, kSteps+1):  # rows = gamma
+            for jGamma in range(1, gammaSteps+1):  # cols = k
+                rect = plt.Rectangle((iK,  jGamma), 1, 1, facecolor=combinedColours[iK, jGamma])
+                ax.add_patch(rect)
 
-    # Plot the color grid
-    for iK in range(1, kSteps+1):  # rows = gamma
-        for jGamma in range(1, gammaSteps+1):  # cols = k
-            rect = plt.Rectangle((iK,  jGamma), 1, 1, facecolor=combinedColours[iK, jGamma])
+        # Add gamma-only color bar (left side)
+        for jGamma in range(1, gammaSteps+1):
+            rect = plt.Rectangle((-1.2, jGamma), 1, 1, facecolor=gammaColours[jGamma])
             ax.add_patch(rect)
 
-    # Add gamma-only color bar (left side)
-    for jGamma in range(1, gammaSteps+1):
-        rect = plt.Rectangle((-1.2, jGamma), 1, 1, facecolor=gammaColours[jGamma])
-        ax.add_patch(rect)
+        # Add k-only color bar (bottom)
+        for iK in range(1, kSteps+1):
+            rect = plt.Rectangle((iK, -1.2), 1, 1, facecolor=kColours[iK])
+            ax.add_patch(rect)
 
-    # Add k-only color bar (bottom)
-    for iK in range(1, kSteps+1):
-        rect = plt.Rectangle((iK, -1.2), 1, 1, facecolor=kColours[iK])
-        ax.add_patch(rect)
+        # Add labels
+        for jGamma in range(1, gammaSteps+1):
+            label = rf"$\gamma$={jGamma}" if jGamma < gammaSteps else rf"$\gamma\geq${gammaSteps}"
+            ax.text(-1.7,  0.5 + jGamma, label, va='center', ha='right', fontsize=8)
 
-    # Add labels
-    for jGamma in range(1, gammaSteps+1):
-        label = rf"$\gamma$={jGamma}" if jGamma < gammaSteps else rf"$\gamma\geq${gammaSteps}"
-        ax.text(-1.7,  0.5 + jGamma, label, va='center', ha='right', fontsize=8)
+        for iK in range(1, kSteps+1):
+            label = f"$k$={iK}" if iK < kSteps else rf"$k\geq${kSteps}"
+            ax.text(iK + 0.5, -1.7, label, va='top', ha='center', fontsize=8)
 
-    for iK in range(1, kSteps+1):
-        label = f"$k$={iK}" if iK < kSteps else rf"$k\geq${kSteps}"
-        ax.text(iK + 0.5, -1.7, label, va='top', ha='center', fontsize=8)
+        # Set axis limits to fit everything
+        ax.set_xlim(-2.2, kSteps+1)
+        ax.set_ylim(-2.2, gammaSteps+1)
 
-    # Set axis limits to fit everything
-    ax.set_xlim(-2.2, kSteps+1)
-    ax.set_ylim(-2.2, gammaSteps+1)
+        ax.set_title(r"Legend Grid: $\gamma$ vs $k$", fontsize=16)
 
-    ax.set_title(r"Legend Grid: $\gamma$ vs $k$", fontsize=12)
+        plt.show()
+    if plot3dBool:
+        minVals = np.asarray(minVals)
+        colourMap = np.zeros(minVals.shape+(4,))
+        for idx in np.ndindex(minVals.shape):
+            # curVal = minVals[idx]
+            curGamma = min(bestGammaArray[idx],gammaSteps)
+            curK = min(bestKArray[idx], kSteps)
+            colourMap[idx] = (*fullColours[(curK,curGamma)],1)
+        objectiveMesh = (-minVals)/(1-minVals)
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        cosMesh = np.cos(thetaMesh)
+        sinMesh = np.sin(thetaMesh)
+        xMesh = cosMesh*rMesh
+        yMesh = sinMesh*rMesh
+        # valNegLogs = np.log10(-minVals)
+        nonNegThetaMaxIdx = thetaMesh.shape[0]//2
+        ls = LightSource(105, 50)
+        shaded_colors = ls.shade_rgb(colourMap[:nonNegThetaMaxIdx],
+                                     np.power(objectiveMesh[:nonNegThetaMaxIdx], 1),
+                                     vert_exag=1, blend_mode='overlay')
+        surf = ax.plot_surface(xMesh[:nonNegThetaMaxIdx], yMesh[:nonNegThetaMaxIdx],
+                               np.power(objectiveMesh,1)[:nonNegThetaMaxIdx],
+                               facecolors=shaded_colors, linewidth=1,
+                               antialiased=True,
+                               rstride=3, cstride=3)
 
-    plt.show()
 
-    x=1
+
+        ax.view_init(elev=45., azim=-95, roll=0)
+        plt.show()
+
+        # Z_sphere = np.sqrt(1 - xMesh ** 2 - yMesh ** 2)
+        # Z_sphere[np.isnan(Z_sphere)] = 0  # avoid NaNs at edge where 1 - x^2 - y^2 <= 0
+        #
+        # # Scale the full vector by the function value Z
+        # X_mapped = objectiveMesh * xMesh
+        # Y_mapped = objectiveMesh * yMesh
+        # Z_mapped = objectiveMesh * Z_sphere
+        #
+        # fig = plt.figure(figsize=(10, 8))
+        # ax = fig.add_subplot(111, projection='3d')
+        #
+        # # Plot the surface
+        # ax.plot_surface(X_mapped, Y_mapped, Z_mapped,
+        #                 facecolors=colourMap,
+        #                 linewidth=0, antialiased=False, shade=True)
+        # plt.show()
+        #
+        # fig = plt.figure(figsize=(10, 8))
+        # ax = fig.add_subplot(111, projection='3d')
+        # cosMesh = np.cos(thetaMesh)
+        # sinMesh = np.sin(thetaMesh)
+        # newThetaMesh = thetaMesh.copy()
+        # newThetaMesh[nonNegThetaMaxIdx:] = thetaMesh[nonNegThetaMaxIdx:] - 2 * np.pi
+        # xMesh = rMesh
+        # yMesh = rMesh * newThetaMesh
+        # # valNegLogs = np.log10(-minVals)
+        # # nonNegThetaMaxIdx = thetaMesh.shape[0] // 2 + 1
+        # # surf = ax.plot_surface(xMesh[nonNegThetaMaxIdx:], yMesh[nonNegThetaMaxIdx:],
+        # #                        np.power((-minVals) / (1 - minVals), 1)[nonNegThetaMaxIdx:],
+        # #                        facecolors=colourMap[nonNegThetaMaxIdx:], linewidth=1,
+        # #                        antialiased=False, shade=False, rstride=1, cstride=1)
+        # # Create grid for the y = pi * x plane
+        # x_plane = np.linspace(0, 1, 11, endpoint=True)
+        # z_plane = np.linspace(0, 0.5, 11, endpoint=True)
+        # X_plane, Z_plane = np.meshgrid(x_plane, z_plane)
+        # Y_plane = np.pi * X_plane
+        # # Plot y = pi * x plane as grid
+        # # for i in range(len(z_plane)):
+        # #     ax.plot(X_plane[i], Y_plane[i], Z_plane[i], color='grey', linestyle='--', linewidth=0.7)
+        # # for j in range(len(x_plane)):
+        # #     ax.plot(X_plane[:, j], Y_plane[:, j], Z_plane[:, j], color='grey', linestyle='--', linewidth=0.7)
+        # surf = ax.plot_surface(X_plane,Z_plane, Y_plane,
+        #
+        #                        edgecolor='royalblue', linewidth=1,
+        #                        antialiased=False, shade=False, rstride=1, cstride=1,alpha=0.6)
+        # surf = ax.plot_surface(xMesh[:nonNegThetaMaxIdx], yMesh[:nonNegThetaMaxIdx],
+        #                        np.power((-minVals) / (1 - minVals), 1)[:nonNegThetaMaxIdx],
+        #                        facecolors=colourMap[:nonNegThetaMaxIdx], linewidth=1,
+        #                        antialiased=False, shade=False, rstride=1, cstride=1)
+        # ax.view_init(elev=-60, azim=-100, roll=0)
+        # plt.show()
+
+        # rFlat, thetaFlat= rMesh[:nonNegThetaMaxIdx].flatten(), thetaMesh[:nonNegThetaMaxIdx].flatten()
+        # tri = mtri.Triangulation(rFlat, thetaFlat)
+        # cosMesh = np.cos(thetaFlat)
+        # sinMesh = np.sin(thetaFlat)
+        # xMesh = cosMesh * rFlat
+        # yMesh = sinMesh * rFlat
+        # tri2 = mtri.Triangulation(xMesh, yMesh)
+        # zMesh = (np.power((-minVals) / (1 - minVals), 1))[:nonNegThetaMaxIdx].flatten()
+        # triangle_colors = colourMap[:nonNegThetaMaxIdx].reshape(xMesh.shape + (4,))[tri.triangles].mean(axis=1)
+        # surf = ax.plot_trisurf(tri,
+        #                        zMesh,
+        #                        # triangles=tri.triangles,
+        #                        facecolors=triangle_colors, linewidth=0,
+        #                        antialiased=False, shade=False)
+
+        # Style the plot
+        # ax.set_xticks([])
+        # ax.set_yticks([])
+        # ax.set_zticks([])
+        # ax.set_title("3D Function Plot with Subgroup Color Mapping")
+
+
+
+        x=1
 
 
 def compute_denominator(n, c=1 / np.sqrt(2)):
