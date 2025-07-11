@@ -233,8 +233,8 @@ class FastRadialEstimator:
 
 
 if __name__ == "__main__":
-    rRes = 50 + 1
-    thetaRes = 60 + 1
+    rRes = 500 + 1
+    thetaRes = 1000 + 1
     rGrid = np.linspace(0, 1, rRes, endpoint=True)
     r2Grid = np.sqrt(rGrid)
     thetaGrid = np.linspace(0, 2 * np.pi, thetaRes, endpoint=True)
@@ -245,7 +245,7 @@ if __name__ == "__main__":
     xMesh = cosMesh*rMesh
     yMesh = sinMesh*rMesh
     coefArray = np.ones((50, 20)) / 4000
-    complexDimension = 3
+    complexDimension = 4
     totalDisk = DiskCombi(complexDimension-2, coefArray)
     # bestGamma, bestK = totalDisk.findMinimalParams(rGrid, thetaGrid)
     bestGamma, bestK, minimalValues = totalDisk.findMinimalParams(r2Grid,thetaGrid)
