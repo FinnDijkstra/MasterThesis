@@ -2,7 +2,7 @@ import numpy as np
 import scipy as sp
 from math import comb
 
-import plot2dCharts
+# import plot2dCharts
 
 
 class Jacobi:
@@ -251,8 +251,8 @@ if __name__ == "__main__":
     bestGamma, bestK, minimalValues = totalDisk.findMinimalParams(r2Grid,thetaGrid)
     # plot2dCharts.groupedPolarPlot(rMesh, thetaMesh, bestGamma, bestK, 5, 5)
     graphTitle = "Parameters for best disk polynomial\n" + fr"in $\mathbb{{C}}^{{{complexDimension}}}$ "
-    plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10,graphTitle,
-                                  legendBool=False, minVals = minimalValues, plot3dBool = True, comDim=complexDimension)
+    # plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10,graphTitle,
+    #                               legendBool=False, minVals = minimalValues, plot3dBool = True, comDim=complexDimension)
     bestGammaMask = (bestGamma>0)
     bestKMask = (bestK >0)
     print(np.sum(bestKMask*bestGammaMask))

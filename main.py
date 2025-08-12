@@ -8,6 +8,7 @@ import numpy as np
 import fractions
 import random
 import scipy.stats as st
+from scipy.special import hyp2f1, loggamma
 # import sympy as sym
 import pandas as pd
 import json
@@ -579,6 +580,38 @@ def stripNonSpin(polyTest, testDim, resolutiontest=2000, maxDeg=20):
         kTest += 1
     return coefList
 
+def c_k(n: int, k: int) -> float:
+    """
+    Coefficient c_k in the Jacobi expansion of K_S(s):
+      K_S(s) = sum_{k>=0} c_k * P_k^{(n-2,0)}(2 s^2 - 1)
+
+    c_k = 2^{-2(n-1)} * ((2k+n-1)/(n-1))^{3/2}
+          * [ ((n-1)_k / k!) * 2F1(-k, k+n-1; n; 1/2) ]^2
+
+    Args:
+        n: ambient complex dimension (n >= 2)
+        k: degree (k >= 0)
+
+    Returns:
+        c_k as a Python float
+    """
+    if n < 2 or k < 0:
+        raise ValueError("Require n >= 2 and k >= 0.")
+
+    # Hypergeometric truncates for integer k
+    H = hyp2f1(-k, k + n - 1, n, 0.5)
+
+    # Log-safe ((n-1)_k / k!) = Gamma(n-1+k)/Gamma(n-1)/Gamma(k+1)
+    lg = loggamma(n - 1 + k) - loggamma(n - 1) - loggamma(k + 1)
+    poch_ratio = np.exp(lg)
+
+    pref = 2.0 ** ( -1* (n - 1)) * ((2 * k + n - 1) / (n - 1)) ** 1.0
+    return float(pref * ((poch_ratio**2) * (H **2) ))
+
+
+def c_coeffs(n: int, K: int) -> np.ndarray:
+    """Vector of [c_0, ..., c_K]."""
+    return np.array([c_k(n, k) for k in range(K + 1)])
 
 def alternateStripNonSpin(arrayTest, testDim, radiusArray, weightsArray, maxDeg=20):
     kTest = 0
@@ -1359,6 +1392,164 @@ def facetReader(filename):
 # end
 
 
+def membership_indicator(X: np.ndarray,
+                         v: np.ndarray,
+                         criteria: list[tuple[tuple[float, float], tuple[float, float]]]
+                         ) -> np.ndarray:
+    """
+    Determine membership in a set defined by radial and angular constraints on the inner product with v.
+
+    Parameters
+    ----------
+    X : np.ndarray, shape (n, m)
+        Array of n vectors of length m to test for membership.
+    v : np.ndarray, shape (m,)
+        The "pole" vector defining the set.
+    criteria : list of ((r_min, r_max), (theta_min, theta_max))
+        List of allowed (magnitude, argument) intervals:
+        - r_min, r_max define the inclusive range for |<v, w>|.
+        - theta_min, theta_max define the inclusive range for arg(<v, w>) (in radians, on (-pi, pi]).
+
+    Returns
+    -------
+    np.ndarray, shape (n,)
+        Array of 0/1 values: 1 if the corresponding row of X lies in any of the specified radial/angular zones, 0 otherwise.
+    """
+    # Compute complex inner products <v, w_i>
+    inner = X.dot(np.conj(v).T)
+    # Magnitudes and arguments
+    r = np.abs(inner)
+    angles = np.angle(inner)
+
+    # Initialize mask to False for all points
+    mask = np.zeros_like(r, dtype=bool)
+
+    # Apply each (radial, angular) criterion
+    for (r_min, r_max), (theta_min, theta_max) in criteria:
+        rad_mask = (r >= r_min) & (r <= r_max)
+        ang_mask = (angles > theta_min) & (angles < theta_max)
+        mask |= (rad_mask & ang_mask)
+
+    return mask.astype(int)
+
+
+def numeric_integration(radius_resolution: int,
+                        theta_resolution: int,
+                        test_radius_resolution: int,
+                        test_theta_resolution: int,
+                        weightpoly1,
+                        weightpoly2,
+                        criteria: list[tuple[tuple[float, float], tuple[float, float]]]
+                        ) -> (np.ndarray, np.ndarray, np.ndarray):
+    """
+    Perform the numerical integration over v and w grids.
+
+    Returns
+    -------
+    vresult : np.ndarray, shape (radius_resolution, theta_resolution)
+        The integrated result for each v-grid point.
+    VR : np.ndarray, shape (radius_resolution, theta_resolution)
+        Radial coordinate grid for v.
+    VTHETA : np.ndarray, shape (radius_resolution, theta_resolution)
+        Angular coordinate grid for v.
+    """
+    # Generate v-grid (radius and theta)
+    vr = np.linspace(0, 1, radius_resolution)
+    vt = np.linspace(0, 2 * np.pi, theta_resolution, endpoint=False)
+    VR, VT = np.meshgrid(vr, vt, indexing='ij')
+    Nv = radius_resolution * theta_resolution
+    # v points in C^3
+    v1 = VR.flatten() * np.exp(1j * VT.flatten())
+    v2 = np.sqrt(1 - VR.flatten() ** 2)
+    # Precompute conjugates
+    v1_conj = np.conj(v1)
+    v2_conj = np.conj(v2)
+
+
+
+    # Build w1 grid
+    wr1 = np.linspace(0, 1, test_radius_resolution + 1)[1:]  # skip zero
+    th1 = np.linspace(np.pi / test_theta_resolution, 2 * np.pi + np.pi / test_theta_resolution, test_theta_resolution, endpoint=False)
+    # Nw1 = wr1.size
+
+    # Precompute which w1 pass e1-membership
+    # Equivalent to: arg(w1) in criteria, and abs(w1) in radial criteria
+    w1_points = np.outer(wr1, np.exp(1j * th1))
+    rad1, theta1 = z2polar(w1_points)
+    mask_w1 = np.zeros_like(rad1, dtype=bool)
+    for (rmin, rmax), (tmin, tmax) in criteria:
+        rad_ok = (rad1 >= rmin) & (rad1 <= rmax)
+        ang_w1 = np.angle(w1_points)
+        ang_ok = (ang_w1 > tmin) & (ang_w1 < tmax)
+        mask_w1 |= (rad_ok & ang_ok)
+    # Compute weight for each w1 point
+    w1_weights = weightpoly1(rad1)
+
+    # Isolate only the valid starting coordinates
+    validW1Points = w1_points[mask_w1]
+    validW1Weights = w1_weights[mask_w1]
+    validW1Rads = rad1[mask_w1]
+    validW1Thetas = theta1[mask_w1]
+
+
+
+    # Build w2 grid (same resolution)
+    wr2 = wr1.copy()
+    th2 = th1.copy()
+
+
+    # Precompute w2 values and weight2
+    w2_vals = np.outer(wr2 , np.exp(1j * th2)).flatten()
+    rads2,theta2 = z2polar(w2_vals)
+    w2_weights = weightpoly2(rads2)
+
+    # Prepare result accumulator
+    vresult = np.zeros(Nv)
+    Nw1 = th1.size
+    Nw2 = wr2.size
+    denom = Nw1 * Nw2
+
+
+    # innerRes1 = np.tensordot(validW1Points, w2_vals,axes=0)
+    # radsInner1 = np.outer(validW1Rads, vr)
+    # thetaInner1 = np.subtract(
+
+    # e1 for membership test
+    e1 = np.array([1 + 0j, 0 + 0j, 0 + 0j])
+
+
+
+    # it = np.nditer(mask_w1, flags=['multi_index'])
+    # Loop over w1 indices
+    for i in range(validW1Points.size):  # w1_val in it:    # range(Nw1):
+        # i = it.multi_index
+        # Pre-inner product for v: conj(v1)*w1
+        w1_val = validW1Points[i]
+        pre_inner = v1_conj * w1_val  # shape (Nv,)
+
+        # weights for this w1 across all w2
+        w1_weight = validW1Weights[i]
+        weights_sub = w1_weight * w2_weights  # shape (Nw2,)
+
+        # Compute inner2 and full_inner: shape (Nv, Nw2)
+        inner2 = v2_conj[:, None] * w2_vals[None, :]
+        full_inner = pre_inner[:, None] + inner2
+
+        # Check criteria for each (v, w2)
+        r = np.abs(full_inner)
+        ang = np.angle(full_inner)
+        mask = np.zeros_like(full_inner, dtype=bool)
+        for (rmin, rmax), (tmin, tmax) in criteria:
+            mask |= (r >= rmin) & (r <= rmax) & (ang > tmin) & (ang < tmax)
+
+        # Accumulate weighted sum over w2 for each v
+        # mask.dot(weights_sub) yields shape (Nv,)
+        vresult += mask.dot(weights_sub)/denom
+
+    # Normalize and reshape
+    vresult /= denom
+    return vresult.reshape(radius_resolution, theta_resolution), VR, VT
+
 def save_test_result(testSuperDict, fileName):
     # Load existing data
     with open(fileName, "r") as f:
@@ -1383,39 +1574,103 @@ def quickJumpNavigator():
 
 
 if __name__ == '__main__':
-    charMatrix = characteristicMatrix(6)
-    bqpVerts = np.zeros((64, 6, 6))
-    for idx in range(64):
-        bqpVerts[idx] = np.outer(charMatrix.T[idx], charMatrix.T[idx])
+    testCompDim = 3
+    # quicktest= True
+    solRads = 10
+    solThetas = 25
+    solPoints = solRads * solThetas
+    weightPolyBase = complexWeightPolyCreator(testCompDim)
+    weightPolySec = complexWeightPolyCreator(testCompDim-1)
+    # criteria = [
+    #     ((0.0, 1.0), (-np.pi / 2, np.pi / 2))
+    # ]
+    # res, VR, VTHETA = numeric_integration(
+    #     radius_resolution=solRads,
+    #     theta_resolution=solThetas,
+    #     test_radius_resolution=15,
+    #     test_theta_resolution=101,
+    #     weightpoly1=weightPolyBase,
+    #     weightpoly2=weightPolySec,
+    #     criteria=criteria
+    # )
+    # resMaxFactor = 0.5 / np.max(res)
+    # res *= resMaxFactor
+    # import matplotlib.pyplot as plt
+    # xMesh = VR * np.cos(VTHETA)
+    # yMesh = VR * np.sin(VTHETA)
+    # test1 = 1/4 + 1/4 * VR * np.cos(VTHETA)
+    # test2 = (1-np.arccos(xMesh)/np.pi)/2
+    # fig = plt.figure(figsize=(10, 8))
+    # ax = fig.add_subplot(111, projection='3d')
+    # surf = ax.plot_surface(xMesh, yMesh,
+    #                        res,
+    #                        linewidth=1,
+    #                        antialiased=True,
+    #                        rstride=3, cstride=3
+    #                        ,color=(1,0,0,0.5))
+    # surf = ax.plot_surface(xMesh, yMesh,
+    #                        test1,
+    #                        linewidth=1,
+    #                        antialiased=True,
+    #                        rstride=3, cstride=3
+    #                        , color=(0, 1, 0, 0.5)
+    #                        )
+    # surf = ax.plot_surface(xMesh, yMesh,
+    #                        test2,
+    #                        linewidth=1,
+    #                        antialiased=True,
+    #                        rstride=3, cstride=3
+    #                        ,color=(0,0,1,0.5))
+    # # ax.view_init(elev=0., azim=-90, roll=0)
+    # # plt.show()
+    # ax.view_init(elev=15., azim=-90, roll=0)
+    # plt.show()
+    # mse1 = np.mean(np.square(res - test1))
+    # mse2 = np.mean(np.square(res - test2))
+    # sumDiff1 = np.sum(weightPolyBase(np.abs(res - test1)))/solPoints
+    # sumDiff2 = np.sum(weightPolyBase(np.abs(res - test2)))/solPoints
+    # print("Result MSE 1:", mse1)
+    # print("Result MSE 2:", mse2)
+    # print("Total difference 1:", sumDiff1)
+    # print("Total difference 2:", sumDiff2)
+    # print(res)
 
-    maskMult = np.ones(64, dtype=bool)
-    maskMult[0] = False
-    for pwr in range(6):
-        maskMult[2 ** pwr] = False
 
-    multBqpVert = bqpVerts[maskMult]
 
-    multBqpVertFlat = multBqpVert.reshape((57, 36))
-    orthBQP = np.zeros_like(multBqpVertFlat)
-    orthBQP[0] = multBqpVertFlat[0]
-    skipThisVert = np.zeros(57,dtype=bool)
-    for idx1 in range(1, 57):
-        curVec = multBqpVertFlat[idx1].copy()
-        for idx2 in range(idx1):
-            if not skipThisVert[idx2]:
-                compVec = orthBQP[idx2]
-                compSize = np.dot(compVec, compVec)
-                curSize = np.dot(compVec, curVec)
-                curVec -= (curSize / compSize) * compVec
-        curVecMask = (np.abs(curVec)>1e-8)
-        if np.max(curVecMask) == True:
-            minCurNonzero = np.min(np.abs(curVec[curVecMask]))
-            curVecScaled = np.zeros_like(curVec)
-            curVecScaled[curVecMask] = curVec[curVecMask]/minCurNonzero
-            orthBQP[idx1] = curVecScaled
-        else:
-            skipThisVert[idx1] = True
-
+    # charMatrix = characteristicMatrix(6)
+    # bqpVerts = np.zeros((64, 6, 6))
+    # for idx in range(64):
+    #     bqpVerts[idx] = np.outer(charMatrix.T[idx], charMatrix.T[idx])
+    #
+    # maskMult = np.ones(64, dtype=bool)
+    # maskMult[0] = False
+    # for pwr in range(6):
+    #     maskMult[2 ** pwr] = False
+    #
+    # multBqpVert = bqpVerts[maskMult]
+    #
+    # multBqpVertFlat = multBqpVert.reshape((57, 36))
+    # orthBQP = np.zeros_like(multBqpVertFlat)
+    # orthBQP[0] = multBqpVertFlat[0]
+    # skipThisVert = np.zeros(57,dtype=bool)
+    # for idx1 in range(1, 57):
+    #     curVec = multBqpVertFlat[idx1].copy()
+    #     for idx2 in range(idx1):
+    #         if not skipThisVert[idx2]:
+    #             compVec = orthBQP[idx2]
+    #             compSize = np.dot(compVec, compVec)
+    #             curSize = np.dot(compVec, curVec)
+    #             curVec -= (curSize / compSize) * compVec
+    #     curVecMask = (np.abs(curVec)>1e-8)
+    #     if np.max(curVecMask) == True:
+    #         minCurNonzero = np.min(np.abs(curVec[curVecMask]))
+    #         curVecScaled = np.zeros_like(curVec)
+    #         curVecScaled[curVecMask] = curVec[curVecMask]/minCurNonzero
+    #         orthBQP[idx1] = curVecScaled
+    #     else:
+    #         skipThisVert[idx1] = True
+    #
+    #
 
     testSaveLocation = "TestResults_"+datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
     if not os.path.exists(testSaveLocation):
@@ -1432,6 +1687,7 @@ if __name__ == '__main__':
         testMax = 0
         testResults = np.ones((testMax,7))
         testDimension = 3
+        coefsCDCV2 = c_coeffs(testDimension, 50)
         nrOfWins = np.zeros(7)
         nrOfPointsets = 9
         SizeOfPointSets = 6
@@ -1446,6 +1702,7 @@ if __name__ == '__main__':
         heighestWeightBase = weightPolyBase(heighestWeightPointBase)
         scaledWeightPolyBase = weightPolyBase / heighestWeightBase
         cDCBase = SphereBasics.complexDoubleCapv2(testDimension, outputResBase, resolutionBase)
+
         radiusSpaceBase = np.linspace(0, 1, outputResBase, endpoint=True)
 
 
@@ -1453,6 +1710,8 @@ if __name__ == '__main__':
         coefsPolyCDCBase = stripNonSpin(polyEstCDCBase, testDimension, 10 * outputResBase)
         polyListBase = [createDiskPolyCosineless(testDimension, kIdx, 0) for kIdx in range(maxDegAll + 1)]
         basePolyBase = sum(polyListBase[kIdx] * coefsPolyCDCBase[kIdx] for kIdx in range(len(coefsPolyCDCBase)))
+
+
 
         bestObjValStart = iterativeProbabilisticImprovingBPQ(testDimension,
                                                                 maxIter=nrOfPointsets * (SizeOfPointSets-2),
