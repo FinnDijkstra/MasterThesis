@@ -8,13 +8,14 @@ import numpy as np
 import fractions
 import random
 import scipy.stats as st
-from scipy.special import hyp2f1, loggamma
+from scipy.special import hyp2f1, loggamma, binom
 # import sympy as sym
 import pandas as pd
 import json
 import os
 import datetime
 from multiprocessing import Pool, cpu_count
+from itertools import combinations
 
 
 
@@ -27,7 +28,7 @@ from numpy.polynomial import Polynomial
 from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, \
     integratedWeightPolyCreator, createRandomPointsComplex
 
-from OrthonormalPolyClasses import Jacobi, Disk, DiskCombi, FastRadialEstimator
+from OrthonormalPolyClasses import Jacobi, Disk, DiskCombi, FastRadialEstimator, FastDiskCombiEstimator
 
 nrOfVars = 10
 nrOfTests = 200
@@ -539,6 +540,110 @@ def modelMultipleBQP(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax
 
 
 
+def finalBQPModel(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, kMax, listOfPointSets=None,
+                     nrOfPoints=2, nrOfPointSets=1):
+    alpha = complexDimension - 2
+    gammaMax = int(gammaMax + 1)
+    kMax = int(kMax + 1)
+    forbiddenZ = polar2z(forbiddenRadius, forbiddenAngle)
+    if listOfPointSets is None:
+        listOfPointSets = []
+        for pointsSetIdx in range(nrOfPointSets):
+            listOfPointSets.append(SphereBasics.createRandomPointsComplex(complexDimension, nrOfPoints,
+                                                                            baseZ=forbiddenZ)[0])
+    else:
+        nrOfPointSets = len(listOfPointSets)
+    charMatricesList = []
+    setSizeList = []
+    nrOfPointsList = []
+    IPMList = []
+    diskPolyValueTensorList = []
+    diskPolysByGamma = [Disk(alpha, curGamma, kMax-1) for curGamma in range(gammaMax)]
+
+    for pointSetIdx in range(nrOfPointSets):
+        pointSet = listOfPointSets[pointSetIdx]
+        nrOfPoints = pointSet.shape[0]
+        charMatrix = characteristicMatrix(nrOfPoints)
+        nrOfSets = charMatrix.shape[1]
+
+        innerProductMatrix = pointSet @ pointSet.conj().T
+        ipmRads, ipmAngles = z2polar(innerProductMatrix)
+        diskPolyValueTensor = np.zeros((gammaMax, kMax, nrOfPoints, nrOfPoints))
+        for gamma in range(gammaMax):
+            diskPolyValueTensor[gamma] = diskPolysByGamma[gamma].calcAtRTheta(ipmRads, ipmAngles)
+        charMatricesList.append(charMatrix)
+        setSizeList.append(nrOfSets)
+        nrOfPointsList.append(nrOfPoints)
+        IPMList.append(innerProductMatrix)
+        diskPolyValueTensorList.append(diskPolyValueTensor)
+    forbiddenInnerproductVals = np.zeros((gammaMax,kMax))
+    for gamma in range(gammaMax):
+        forbiddenInnerproductVals[gamma] = diskPolysByGamma[gamma].calcAtRTheta(forbiddenRadius, forbiddenAngle)
+    m = gp.Model(f"BQP model for forbidden innerproduct {forbiddenZ} in dimension {complexDimension}, "
+                 f"with {nrOfPoints} BQP points,"
+                 f" gamma checked {gammaMax}, k checked {kMax}")
+    m.setParam("OutputFlag", 0)
+    m.setParam(GRB.Param.FeasibilityTol, 1e-8)
+    # m.setParam(GRB.Param.DisplayInterval, 10)
+    diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="diskpoly weights")
+    m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum() * diskPolyWeights.sum() >= 0, "SDP contraint")
+    m.addConstr(gp.quicksum(forbiddenInnerproductVals[gammaIdx, kIdx] * diskPolyWeights[gammaIdx, kIdx]
+                            for gammaIdx in range(gammaMax) for kIdx in range(kMax)) == 0,
+                f"Forbidden Innerproduct Constraint")
+
+    for pointSetIdx in range(nrOfPointSets):
+
+        curNrOfSets = setSizeList[pointSetIdx]
+        curCharMatrix = charMatricesList[pointSetIdx]
+        curDPVT = diskPolyValueTensorList[pointSetIdx]
+        curNrOfPoints = nrOfPointsList[pointSetIdx]
+
+        setWeights = m.addVars(curNrOfSets, vtype=GRB.CONTINUOUS, lb=0, name=f"set weights pointset {pointSetIdx}")
+
+        m.addConstr(setWeights.sum() == 1, name=f"convex description of sets pointset {pointSetIdx}")
+
+        for mainPointIdx in range(curNrOfPoints):
+            for secondPointIdx in range(mainPointIdx+1):
+                charVector = curCharMatrix[mainPointIdx]*curCharMatrix[secondPointIdx]
+
+                m.addConstr(gp.quicksum(curDPVT[gammaIdx, kIdx, mainPointIdx, secondPointIdx] *
+                                        diskPolyWeights[gammaIdx, kIdx]
+                                        for gammaIdx in range(gammaMax) for kIdx in range(kMax))
+                            ==
+                            gp.quicksum(setWeights[setIdx]*charVector[setIdx] for setIdx in range(curNrOfSets)),
+                            f"BPQ  Constraint vectors {mainPointIdx}, {secondPointIdx}, pointset {pointSetIdx}")
+    m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
+    lbFeasibleBool = False
+    powerIdx = (complexDimension - 1)
+    while not lbFeasibleBool:
+        lbConstr = m.addConstr(diskPolyWeights.sum() >= (1 / 2) ** powerIdx,
+                                "Lower bound for obj due to double cap to fix weird behaviour")
+        m.update()
+        m.optimize()
+        if m.Status == GRB.INFEASIBLE:
+            m.remove(lbConstr)
+            powerIdx += 1
+        else:
+            lbFeasibleBool = True
+    diskSum = 0
+    diskWeightsArray = np.zeros((gammaMax, kMax))
+    for gammaIdx in range(gammaMax):
+        for kIdx in range(kMax):
+            diskSum += diskPolyWeights[gammaIdx,kIdx].x
+            diskWeightsArray[gammaIdx,kIdx] = diskPolyWeights[gammaIdx,kIdx].x
+    setSizeList = []
+    setTotal = 0
+    AddedPoints = 1
+    for pointset in listOfPointSets:
+        curSize = len(pointset)
+        setSizeList.append(curSize)
+        setTotal += curSize
+        AddedPoints += curSize-2
+    adjustedDWA = diskWeightsArray/diskSum
+    return adjustedDWA, diskSum, diskWeightsArray
+
+
+
 def createDiskPolyCosineless(dim, k, gamma):
     doubleAngleR = Polynomial((-1,0,2),[0,1],[0,1])
     rPower = Polynomial([0]*gamma+[1],[0,1],[0,1])
@@ -605,7 +710,7 @@ def c_k(n: int, k: int) -> float:
     lg = loggamma(n - 1 + k) - loggamma(n - 1) - loggamma(k + 1)
     poch_ratio = np.exp(lg)
 
-    pref = 2.0 ** ( -1* (n - 1)) * ((2 * k + n - 1) / (n - 1)) ** 1.0
+    pref = 2.0 ** ( -2* (n -1)) * ((2 * k + n - 1) / (n - 1)) ** 1.0
     return float(pref * ((poch_ratio**2) * (H **2) ))
 
 
@@ -637,24 +742,90 @@ def polyFromCoefs(coefs, polySet):
                                     window=[0,1], domain=[0,1])
 
 
-def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCoefficients, polynomialSet,
-                                startingFacet=0):
+def halfOpenRectsToCoefs(rIntervals, thetaIntervals, kMax, gammaMax, complexDim, rRes=200):
+    kStop = kMax + 1
+    gammaStop = gammaMax + 1
+    coefTotal = kStop*gammaStop
+    # theta intervals are defined over [0,pi] due to symmetry constraint of a zonal function
+    angularMods = np.zeros(gammaStop)
+    angularMods[0] = 2*np.sum(thetaIntervals[:,1]-thetaIntervals[:,0])/(2*np.pi)
+    for gammaIdx in range(1,gammaStop):
+        angularMods[gammaIdx] = 2*np.sum(np.sin(gammaIdx*thetaIntervals[:,1])
+                                         -np.sin(gammaIdx*thetaIntervals[:,0]))/(2*np.pi*gammaIdx)
+    constantMeasure = lambda r: -(1-r**2)**(complexDim-1)
+    intSizes = constantMeasure(rIntervals[:,1])-constantMeasure(rIntervals[:,0])
+    constMod = np.sum(intSizes)
+    functionMeasure = lambda r: 2*(complexDim-1)*r*(1-r**2)**(complexDim-2)
+    radialNumerators = np.zeros((gammaStop,kStop))
+    intCoefConstructor = np.ones((gammaStop,kStop))/coefTotal
+    diskCombiPolys = DiskCombi(complexDim-2,intCoefConstructor)
+    for rIntervalIdx in range(rIntervals.shape[0]):
+        # setup integration of the interval by creating the radial points and their weighted measure
+        (rStart,rStop) = rIntervals[rIntervalIdx]
+        radiusArray = np.linspace(rStart,rStop,rRes,endpoint=False) + (rStop-rStart)/(2*rRes)
+        measurePoints = functionMeasure(radiusArray)/rRes*(rStop-rStart)
+        measureNumericalInt = np.sum(measurePoints)
+        measurePoints *= intSizes[rIntervalIdx]/measureNumericalInt
+
+        # calc values of all relavant polys at the points in the interval
+        combiVals = diskCombiPolys.allValues(radiusArray, 0)
+        radialNumerators += np.dot(combiVals, measurePoints)[:, :, 0]
+    numerators = radialNumerators*angularMods[:,None]
+    squareNumerators = np.square(numerators)
+    kArray = np.arange(kStop)
+    gammaArray = np.arange(gammaStop)
+    kMesh, gammaMesh = np.meshgrid(kArray,gammaArray)
+
+    chiFunc = np.where(gammaMesh == 0, 1, 0.5)
+
+    denomNest = (2.0 * kMesh + complexDim + gammaMesh - 1.0)
+    c1 = binom(kMesh + complexDim - 2.0, kMesh)
+    c2 = binom(kMesh + complexDim + gammaMesh - 2.0, kMesh + gammaMesh)
+    denominators = chiFunc * (complexDim-1)/(denomNest*c1*c2)
+    results = squareNumerators/denominators
+    comparisonDC = c_coeffs(3,21)
+    print(np.sum(results))
+    print(np.sqrt(results[0,0]))
+    return results
+
+
+
+
+
+def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
+                                startingFacet=0, maxDryRun=-1, stopEarly=True, useRadialEstimator=True):
+
     pointSetSize = startingPointset.shape[0]
-    # significantCoefs = np.argwhere(startingCoefficients > 1e-9)
-    idxOfLastSignificantCoef = np.max(np.argwhere(startingCoefficients > 1e-4),axis=0)
+    significantCoefs = np.argwhere(startingCoefficients > 1e-4)
+    idxOfLastSignificantCoef = np.max(significantCoefs,axis=0)
     # startingPolynomial = polyFromCoefs(startingCoefficients, polynomialSet)
-    startingPolynomial = DiskCombi(dim-2,startingCoefficients[:idxOfLastSignificantCoef[0]+1,
-                                         :idxOfLastSignificantCoef[1]+1])
+    if useRadialEstimator:
+        startingPolynomial = FastDiskCombiEstimator(dim-2,
+                                                    startingCoefficients[:idxOfLastSignificantCoef[0]+1,
+                                                                            :idxOfLastSignificantCoef[1]+1]
+                                                    ,resolution=1000)
+        # # WIP, estimator needs to be made that accept cos(\theta\gamma) stuff
+        # # HOW TO:
+        # # Make radial estimators for each gamma used, then mult by cos(\theta\gamma) then sum results
+        # # Result:
+        # # Non recursive function for disk polynomials (aka profit)
+        # polyToEstimate = DiskCombi(dim - 2, startingCoefficients[:idxOfLastSignificantCoef[0] + 1,
+        #                                         :idxOfLastSignificantCoef[1] + 1])
+        # startingPolynomial = polyToEstimate
+    else:
+        startingPolynomial = DiskCombi(dim-2,startingCoefficients[:idxOfLastSignificantCoef[0]+1,
+                                             :idxOfLastSignificantCoef[1]+1])
     startingGuess = np.concat([startingPointset.T.real, startingPointset.T.imag])
     flattenedStartingGuess = startingGuess.ravel()
+    baseFlattenedStartingGuess = flattenedStartingGuess.copy()
     shapeStartingGuess = startingGuess.shape
-    shapeStartingSet = startingPointset.shape
-    startingInnerproduct = ((flattenedStartingGuess[:pointSetSize*dim]-1j*flattenedStartingGuess[pointSetSize*dim:]).T @
-                            (flattenedStartingGuess[:pointSetSize*dim]+1j*flattenedStartingGuess[pointSetSize*dim:]))
-    startingInnerproductv2 = (flattenedStartingGuess.reshape(shapeStartingGuess)[:dim] - 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
-                                                                                dim:]).T @ (
-                                       flattenedStartingGuess.reshape(shapeStartingGuess)[: dim] + 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
-                                                                                           dim:])
+    # shapeStartingSet = startingPointset.shape
+    # startingInnerproduct = ((flattenedStartingGuess[:pointSetSize*dim]-1j*flattenedStartingGuess[pointSetSize*dim:]).T @
+    #                         (flattenedStartingGuess[:pointSetSize*dim]+1j*flattenedStartingGuess[pointSetSize*dim:]))
+    # startingInnerproductv2 = (flattenedStartingGuess.reshape(shapeStartingGuess)[:dim] - 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
+    #                                                                             dim:]).T @ (
+    #                                    flattenedStartingGuess.reshape(shapeStartingGuess)[: dim] + 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
+    #                                                                                        dim:])
     validIneqs, facetIneqs, betas = facetReader("bqp6.dat")
     recomplexify = lambda S: ((S.reshape(shapeStartingGuess)[:dim]-
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
@@ -671,7 +842,9 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
     facetIdx = startingFacet + 1
     if validIneqs:
         nrOfFacets = betas.shape[0]
-        relativeSizes = np.max(np.max(np.abs(facetIneqs),axis=1), axis=1)
+        if maxDryRun == -1:
+            maxDryRun = nrOfFacets
+        # relativeSizes = np.max(np.max(np.abs(facetIneqs),axis=1), axis=1)
         for facetNr in range(nrOfFacets):
             startingLocations = createRandomPointsComplex(dim,6, includeInner=False)[0]
             startingGuess = np.concat([startingLocations.T.real, startingLocations.T.imag])
@@ -680,7 +853,19 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
             objective = lambda S: betas[facetIdx] - np.sum(
                 np.multiply(facetIneqs[facetIdx],polyVals(S)))
             constraint = lambda S: np.sum(np.square(S.reshape(shapeStartingGuess)),axis=0)-1
+
+            relativeSizeV1 = np.sqrt(np.sum(np.abs(facetIneqs[facetIdx])))
             currentCutOff = -1.5 * (-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2))
+
+            succesBase = False
+            succesRand = False
+            baseObj = 0
+            randObj = 0
+            baseSol = baseFlattenedStartingGuess
+            randSol = flattenedStartingGuess
+
+
+            # randompoints as startingpoints
             try:
                 res = scipy.optimize.minimize(
                     objective, flattenedStartingGuess,
@@ -690,18 +875,60 @@ def facetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, startingCo
                     options={"maxiter":500}
                 )
             except:
-                lastImprovement += 1
+                succesRand = False
             else:
-                relativeObjective = res.fun  # / relativeSizes[facetIdx]
+                relativeObjective = res.fun / relativeSizeV1  # / relativeSizes[facetIdx]
                 if relativeObjective < bestFacet and res.constr_violation < 1e-8:
-                    sol = res.x.reshape(shapeStartingGuess)
-                    bestFacet = relativeObjective
-                    lastImprovement = 0
+                    randSol = res.x.reshape(shapeStartingGuess)
+                    randObj = relativeObjective
+                    succesRand = True
                 else:
-                    lastImprovement += 1
-            finally:
-                if lastImprovement >= 3 and bestFacet < currentCutOff:
+                    succesRand = False
+
+
+            # input points as startingpoints
+            try:
+                res = scipy.optimize.minimize(
+                    objective, baseFlattenedStartingGuess,
+                    method='trust-constr',
+                    constraints={'type': 'eq', 'fun': constraint},
+                    tol=1e-8,
+                    options={"maxiter":500}
+                )
+            except:
+                succesBase = False
+            else:
+                relativeObjective = res.fun / relativeSizeV1 # / relativeSizes[facetIdx]
+                if relativeObjective < bestFacet and res.constr_violation < 1e-8:
+                    baseSol = res.x.reshape(shapeStartingGuess)
+                    baseObj = relativeObjective
+                    succesBase = True
+                else:
+                    succesBase = False
+
+            # Find best sol out of starting options
+            resObj = baseObj
+            resSol = baseSol
+            succesRes = succesBase
+            if succesRand:
+                if randObj < baseObj:
+                    resObj = randObj
+                    resSol = randSol
+                    succesRes = succesRand
+
+            # Update best sol
+            if succesRes:
+                lastImprovement = 0
+                bestFacet = resObj
+                sol = resSol
+            else:
+                lastImprovement += 1
+
+            # Stop if criteria are met
+            if bestFacet < 0 and stopEarly:
+                if bestFacet < currentCutOff or lastImprovement >= maxDryRun:
                     break
+
         if bestFacet < 0:
             return True, (sol[:dim]+1j*sol[dim:]).T, (facetIdx+1) % nrOfFacets
         else:
@@ -743,7 +970,7 @@ def parrallelFacetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, s
 
     # startingPolynomial = polyFromCoefs(startingCoefficients, polynomialSet)
     startingPolynomialv0 = DiskCombi(dim-2,startingCoefficients)
-    startingPolynomial = FastRadialEstimator(startingPolynomialv0, 1000001)
+    startingPolynomial = FastRadialEstimator(startingPolynomialv0, 10001)
     startingGuess = np.concat([startingPointset.T.real, startingPointset.T.imag])
     flattenedStartingGuess = startingGuess.ravel()
     shapeStartingGuess = startingGuess.shape
@@ -796,7 +1023,10 @@ def parrallelFacetInequalityBQPGammaless(dim,startingPointset, fixedPointsets, s
 
 def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIter=10, maxDeg=0, relativityScale=-1,
                                        maxSetSize=10, uniformCoordinateWise=False,
-                                       reverseWeighted=False, spreadPoints=False, basePoly=None):
+                                       reverseWeighted=False, spreadPoints=False, basePoly=None,
+                                       forbiddenRad=0, forbiddenTheta=0, sequentialEdges=False,
+                                       printBool=False, plotBool=False):
+
     if maxDeg == 0:
         maxDeg = 4 * (dim - 1)
     if relativityScale == -1:
@@ -819,10 +1049,13 @@ def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIt
 
     pointSet1 = np.zeros((2, dim), dtype=np.complex128)
     pointSet1[0, 0] = 1
-    pointSet1[1, 1] = 1
+    pointSet1[1, 1] = polar2z(forbiddenRad, -forbiddenTheta)
+    pointSet1[1, 1] = np.sqrt(1-forbiddenRad**2)
 
 
-    _, _,  coefsThetav0, bestObjVal,unscaledcoefsThetav0 = modelMultipleBQP(0, 0, dim, 0, maxDeg,
+
+    _, _,  coefsThetav0, bestObjVal,unscaledcoefsThetav0 = modelMultipleBQP(forbiddenRad,
+                                                                            forbiddenTheta, dim, 0, maxDeg,
                                            listOfPointSets=[pointSet1])
     coefsForKv0 = coefsThetav0[0]
 
@@ -1001,6 +1234,30 @@ def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIt
                 innerProductList = np.insert(innerProductList, insertIdx, coordinateRadius)
                 # distantPoly *= Polynomial([coordinateRadius**2,-2*coordinateRadius,1], window=[0,1],domain=[0,1])
                 remainingRadius = np.sqrt(remainingRadius ** 2 - coordinateRadius ** 2)
+        elif sequentialEdges:
+            prevPoint = pointSetNew[nrOfNextPoints - 1]
+            basis = onb_with_vector(prevPoint)
+
+
+            newPointCoefRads = np.zeros_like(prevPoint)
+            newPointCoefRads[0] = forbiddenRad
+            remainingRadius = np.sqrt(1 - forbiddenRad ** 2)
+            coordinateAngleCoefs = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            coordinateAngleCoefs[0] = -forbiddenTheta
+            surfaceMeasure = lambda r, decr: 1-(1 - r ** 2) ** (dim - 2 - decr)
+            radialRealizations = st.uniform.rvs(size=dim-2)
+            for radIdx in range(dim-2):
+                realization = radialRealizations[radIdx]
+                normalizationFactor = surfaceMeasure(remainingRadius,radIdx)
+                radialCoef = np.power(1-np.power(1-realization*normalizationFactor,1/(dim-2-radIdx)),1/2)
+                newPointCoefRads[radIdx+1] = radialCoef
+                remainingRadius = np.sqrt(remainingRadius**2-radialCoef**2)
+                if remainingRadius <= 0:
+                    break
+            newPointCoefRads[-1] = remainingRadius
+            newPointComplexCoefs = polar2z(newPointCoefRads, coordinateAngleCoefs)
+            newPoint = np.dot(basis, newPointComplexCoefs)
+
         else:
             FirstCoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=2)
             overUnderRest = np.random.randint(0, 2, size=min(dim, nrOfNextPoints - 1))
@@ -1146,6 +1403,418 @@ def iterativeProbabilisticImprovingBPQ(dim, resolution=201, outputRes=300, maxIt
     return outputDict
 
 
+
+def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
+                    sizeOfBQPSet=10, setAmount=10, setLinks=1,
+                    sequentialEdges=False, uniformCoordinateWise=False, reverseWeighted=False, spreadPoints=False,
+                    compareToLowerBound=False, trulyUniformOnSphere=False, improvementWithFacets = False,
+                    relativityScale=-1, basePoly=None,
+                    printBool=False):
+    # Make sure all correct information is available
+    if maxDeg == 0:
+        maxDeg = 4 * (dim - 1)
+    if reverseWeighted:
+        if relativityScale == -1:
+            relativityScale = (maxDeg - 1) / maxDeg
+    if spreadPoints:
+        innerProductList = np.array([0, 1])
+    else:
+        innerProductList = []
+
+    # Create radial measures and their densities for each dimension
+    weightPolyList = [complexWeightPolyCreator(dim - depth) for depth in range(dim - 1)]
+    weightIntsList = [integratedWeightPolyCreator(dim - depth) for depth in range(dim - 1)]
+
+
+
+    # Start making point sets for simplest set with inner product t
+    pointSet1 = np.zeros((2, dim), dtype=np.complex128)
+    pointSet1[0, 0] = 1
+    pointSet1[1, 1] = polar2z(forbiddenRad, -forbiddenTheta)
+    pointSet1[1, 1] = np.sqrt(1 - forbiddenRad ** 2)
+
+    # Run once to get a baseline
+    coefsThetav0, bestObjVal, unscaledcoefsThetav0 = finalBQPModel(forbiddenRad,
+                                                                            forbiddenTheta, dim, maxGamma, maxDeg,
+                                                                            listOfPointSets=[pointSet1])
+    # Disk poly from baseline
+    diskPolyBQPLess = DiskCombi(dim-2,unscaledcoefsThetav0)
+
+    # Initialize the lists for BQP sets, disk polynomials and their coefficients in both normalizations
+    listOfPointSets = [pointSet1]
+    fullPointSets = []
+    resultingpolyList = [diskPolyBQPLess]
+    coefThetaList = [coefsThetav0]
+    unscaledCoefThetaList = [unscaledcoefsThetav0]
+
+    # Set counters to start
+    facetStart = 0
+    setIdx = 0
+    pointsInCurSet = 2
+    iterationNr = 0
+
+    while setIdx < setAmount:
+        # Preparation for next point and set
+        remainingRadius = 1
+        nrOfNextPoints = pointsInCurSet + 1
+        if pointsInCurSet == 2 and setIdx != 0:
+            fullPointSets.append(listOfPointSets[iterationNr])
+            prevPointSet = listOfPointSets[0]
+        else:
+            prevPointSet = listOfPointSets[iterationNr]
+        pointSetNew = np.zeros((nrOfNextPoints, dim), dtype=np.complex128)
+        pointSetNew[:nrOfNextPoints - 1] = prevPointSet
+
+        # straight up: random argument, magnitude of coordinate is realization * remaining radius
+        if uniformCoordinateWise:
+            CoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            newPoint = np.zeros(dim, dtype=np.complex128)
+            relativeSizes = np.random.random(size=dim - 1)
+            for i in range(min(dim, nrOfNextPoints)):
+                if remainingRadius <= 0:
+                    break
+                if i + 1 < min(dim, nrOfNextPoints):
+                    coordinateRadius = remainingRadius * relativeSizes[i]
+                else:
+                    coordinateRadius = remainingRadius
+                coordinateValue = coordinateRadius * np.exp(1j * CoordinateAngles[i])
+                newPoint[i] = coordinateValue
+                remainingRadius = np.sqrt(remainingRadius ** 2 - coordinateRadius ** 2)
+
+        # with radius r, realization R and remaining radius b, then r = b*((1-(b*R)^2)/(1-b^2))^(n-1)
+        # This creates a distribution that errs on the side of the middle a lot
+        elif reverseWeighted:
+            weightInt = weightIntsList[0]
+            CoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            newPoint = np.zeros(dim, dtype=np.complex128)
+            relativeSizes = np.random.random(size=dim - 1)
+            for i in range(min(dim, nrOfNextPoints)):
+                if remainingRadius <= 0:
+                    break
+                if i + 1 < min(dim, nrOfNextPoints):
+                    maxInt = weightInt(remainingRadius)
+                    scaledWeightInt = weightInt / maxInt
+                    unTransformedFactor = remainingRadius * relativeSizes[i]
+                    coordinateRadius = remainingRadius * scaledWeightInt(unTransformedFactor)
+                else:
+                    coordinateRadius = remainingRadius
+                coordinateValue = coordinateRadius * np.exp(1j * CoordinateAngles[i])
+                newPoint[i] = coordinateValue
+                remainingRadius = np.sqrt(remainingRadius ** 2 - coordinateRadius ** 2)
+
+        # density the probability is the squared error of a possible inner product and
+        # already existing the inner products.
+        # This should produce a diverse set of inner products
+        elif spreadPoints:
+            CoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            newPoint = np.zeros(dim, dtype=np.complex128)
+            relativeSizes = np.random.random(size=dim - 1)
+            for i in range(min(dim, nrOfNextPoints)):
+                if remainingRadius <= 0:
+                    break
+                if i + 1 < min(dim, nrOfNextPoints):
+                    pieceWisePolyBreakpoints = np.zeros(2 * innerProductList.shape[0] - 1)
+                    for leftIdx in range(innerProductList.shape[0]):
+                        for shiftIdx in range(2):
+                            pwpbIdx = 2 * leftIdx + shiftIdx
+                            if pwpbIdx < pieceWisePolyBreakpoints.shape[0]:
+                                pieceWisePolyBreakpoints[pwpbIdx] = (1 / 2 * innerProductList[leftIdx] +
+                                                                     1 / 2 * innerProductList[leftIdx + shiftIdx])
+                    sizesOfParts = pieceWisePolyBreakpoints[:-1] - pieceWisePolyBreakpoints[1:]
+                    intsOfParts = np.square(sizesOfParts)
+                    radiusIdx = np.searchsorted(pieceWisePolyBreakpoints, remainingRadius)
+                    if radiusIdx == intsOfParts.shape[0]:
+                        radiusIdx -= 1
+                        cumsumOfInts = np.cumsum(intsOfParts)
+                        totalOfInt = np.sum(cumsumOfInts[- 1])
+                    else:
+                        if radiusIdx % 2 == 1:
+                            intRadContribution = np.square(
+                                remainingRadius - pieceWisePolyBreakpoints[radiusIdx - 1])
+                        else:
+                            radSquaredDistance = np.square(-remainingRadius + pieceWisePolyBreakpoints[radiusIdx])
+                            intRadContribution = intsOfParts[radiusIdx] - radSquaredDistance
+                        cumsumOfInts = np.cumsum(intsOfParts)
+                        totalOfInt = np.sum(cumsumOfInts[radiusIdx - 1]) + intRadContribution
+                    relativeOfInt = totalOfInt * relativeSizes[i]
+                    newIdx = np.searchsorted(cumsumOfInts, relativeOfInt)
+                    if newIdx % 2 == 1:
+                        coordinateRadius = (np.sqrt(relativeOfInt - cumsumOfInts[newIdx - 1])
+                                            + pieceWisePolyBreakpoints[newIdx - 1])
+                    else:
+                        coordinateRadius = -(np.sqrt(-relativeOfInt + cumsumOfInts[newIdx])
+                                             + pieceWisePolyBreakpoints[newIdx])
+                else:
+                    coordinateRadius = remainingRadius
+                coordinateValue = coordinateRadius * np.exp(1j * CoordinateAngles[i])
+                newPoint[i] = coordinateValue
+                insertIdx = np.searchsorted(innerProductList, coordinateRadius)
+
+                # Insert x at the correct index
+                innerProductList = np.insert(innerProductList, insertIdx, coordinateRadius)
+                remainingRadius = np.sqrt(remainingRadius ** 2 - coordinateRadius ** 2)
+
+        # Spreads points equally over the sphere
+        # under the constraint that they must have inner product t with the previous point.
+        elif sequentialEdges:
+            prevPoint = pointSetNew[nrOfNextPoints - 2]
+            basis = onb_with_vector(prevPoint)
+
+            newPointCoefRads = np.zeros_like(prevPoint)
+            newPointCoefRads[0] = forbiddenRad
+            remainingRadius = np.sqrt(1 - forbiddenRad ** 2)
+            coordinateAngleCoefs = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            coordinateAngleCoefs[0] = -forbiddenTheta
+            surfaceMeasure = lambda r, decr: 1 - (1 - r ** 2) ** (dim - 2 - decr)
+            radialRealizations = st.uniform.rvs(size=dim - 2)
+            for radIdx in range(dim - 2):
+                realization = radialRealizations[radIdx]
+                normalizationFactor = surfaceMeasure(remainingRadius, radIdx)
+                radialCoef = np.power(1 - np.power(1 - realization * normalizationFactor, 1 / (dim - 2 - radIdx)),
+                                      1 / 2)
+                newPointCoefRads[radIdx + 1] = radialCoef
+                remainingRadius = np.sqrt(remainingRadius ** 2 - radialCoef ** 2)
+                if remainingRadius <= 0:
+                    break
+            newPointCoefRads[-1] = remainingRadius
+            newPointComplexCoefs = polar2z(newPointCoefRads, coordinateAngleCoefs)
+            newPoint = np.dot(basis, newPointComplexCoefs)
+
+        # If the coefficients for the lower bound have been provided, it subtracts the coefficients and
+        # places inner products where the functions differ a lot
+        elif compareToLowerBound:
+            # WIP TO BE FIXED
+            differenceIntegral = lambda r: r**2
+            differenceDensity = lambda r: 2 * r
+            FirstCoordinateAngles = st.uniform.rvs(scale=2 * math.pi, size=2)
+            overUnderRest = np.random.randint(0, 2, size=min(dim, nrOfNextPoints - 1))
+
+            newPoint = np.zeros(dim, dtype=np.complex128)
+            for i in range(min(dim, nrOfNextPoints - 1)):
+                if remainingRadius <= 0:
+                    break
+                if i <= 1:
+                    differenceSizeIdx = differenceIntegral(remainingRadius)
+                    pdfIdx = differenceDensity / differenceSizeIdx
+                    probability = SphereBasics.polyPdf(a=0, b=remainingRadius, poly=pdfIdx,
+                                                       name=f'Probability Distrubution Init')
+                    radiusCur = probability.rvs()
+                    coordinate = radiusCur * np.exp(1j * FirstCoordinateAngles[i])
+                else:
+                    # use i'th point as w
+                    comparisonPoint = pointSetNew[i]
+                    # preditermined coordinates have inner product p(v,w) below
+                    innerProductWithPrev = np.vdot(comparisonPoint[:i], newPoint[:i])
+                    absIPWP = np.abs(innerProductWithPrev)
+                    # w_i
+                    PrevLastCoordinateRadius = np.abs(comparisonPoint[i])
+                    # |<v,w>| in [|p(v,w)| - |v_max w_i|, |p(v,w)| - |v_max w_i|]
+                    lbIP = max(0, absIPWP - PrevLastCoordinateRadius * remainingRadius)
+                    ubIP = min(1, absIPWP + PrevLastCoordinateRadius * remainingRadius)
+                    # adjust probability distribution within range of possibilities
+                    differenceSizeIdx = differenceIntegral(ubIP) - differenceIntegral(lbIP)
+                    pdfIdx = differenceDensity / differenceSizeIdx
+                    probability = SphereBasics.polyPdf(a=lbIP, b=ubIP, poly=pdfIdx,
+                                                       name=f'Probability Distrubution innerproduct')
+                    desiredInnerproduct = probability.rvs()
+                    # |<v,w>| must be adjusted by v_i*w_i with the number below
+                    desiredLastCoordinateFactor = desiredInnerproduct - absIPWP
+                    if i == dim - 1:
+                        # cannot funnel remaining radius to another coordinate
+                        radiusCur = remainingRadius
+                    else:
+                        # |v_i| must be in [t/w_i,v_max]
+                        radiusLB = np.abs(desiredLastCoordinateFactor) / PrevLastCoordinateRadius
+                        # choose using weighted distrubution what part of the radius stays on this coordinate
+                        curWeightPoly = weightPolyList[i]
+                        curIntPoly = weightIntsList[i]
+                        curPossibilitySize = curIntPoly(remainingRadius) - curIntPoly(radiusLB)
+                        curWeightPoly /= curPossibilitySize
+                        radiusProbability = SphereBasics.polyPdf(a=radiusLB, b=remainingRadius, poly=curWeightPoly,
+                                                                 name=f'radiusPart distribution')
+                        radiusCur = radiusProbability.rvs()
+                    # with |v_i| = radiusCur, a relative phase is found to get desired innerproduct,
+                    # randomly choosing for [0,pi] or [-pi,0]
+                    relativeAngle = (2 * overUnderRest[i] - 1) * np.arccos(
+                        (desiredLastCoordinateFactor ** 2 -
+                         (PrevLastCoordinateRadius * radiusCur) ** 2)
+                        / (2 * (PrevLastCoordinateRadius * radiusCur)))
+                    # the true phase is found by multiplying the relative phase with the phase of the p(v,w)
+                    coordinate = radiusCur * np.exp(1j * relativeAngle) * (innerProductWithPrev / absIPWP)
+                    # coordinate = radiusCur*np.exp(1j*coordinateAngles[i])
+                newPoint[i] = coordinate
+                remainingRadius = np.sqrt(remainingRadius ** 2 - radiusCur ** 2)
+            if nrOfNextPoints <= dim:
+                newPoint[nrOfNextPoints - 1] = remainingRadius
+
+        # Chooses a point according to the surface measure
+        elif trulyUniformOnSphere:
+            newPointCoefRads = np.zeros(dim)
+            coordinateAngleCoefs = st.uniform.rvs(scale=2 * math.pi, size=dim)
+            surfaceMeasure = lambda r, decr: 1 - (1 - r ** 2) ** (dim - 2 - decr)
+            radialRealizations = st.uniform.rvs(size=dim - 1)
+            for radIdx in range(dim - 2):
+                realization = radialRealizations[radIdx]
+                normalizationFactor = surfaceMeasure(remainingRadius, radIdx)
+                radialCoef = np.power(1 - np.power(1 - realization * normalizationFactor, 1 / (dim - 2 - radIdx)),
+                                      1 / 2)
+                newPointCoefRads[radIdx + 1] = radialCoef
+                remainingRadius = np.sqrt(remainingRadius ** 2 - radialCoef ** 2)
+                if remainingRadius <= 0:
+                    break
+            newPointCoefRads[-1] = remainingRadius
+            newPoint = polar2z(newPointCoefRads, coordinateAngleCoefs)
+
+        # Failsafe
+        else:
+            newPoint = np.ones(dim)/np.sqrt(dim)
+        print("point made, running problem")
+        # Add point to pointset
+        pointSetNew[nrOfNextPoints - 1] = newPoint
+
+        # Process pointsets
+        listOfPointSets.append(pointSetNew)
+        newInnerproducts = pointSetNew @ pointSetNew.conj().T
+        newRadii, _ = z2polar(newInnerproducts)
+        for i in range(newRadii.shape[0]):
+            if newRadii[i][i] < 1 - 0.000001 or newRadii[i][i] > 1 + 0.000001:
+                print(f"Radius error: {newRadii[i][i]}")
+
+        # Append sets together according to setLinks
+        inputPointSets = [listOfPointSets[iterationNr + 1]] + fullPointSets
+        if setLinks == 1:
+            pointSetsForModel = inputPointSets
+        elif len(fullPointSets) < setLinks:
+            if improvementWithFacets:
+                pointSetsForModel = [np.concat(inputPointSets)]
+            else:
+                pointSetsForModel = [np.concat([inputPointSets[0][:2]]+[inputPointSets[setIdx][2:]
+                                                                        for setIdx in range(len(inputPointSets))])]
+        else:
+            pointSetsForModel = []
+            if improvementWithFacets:
+                for comb in combinations(range(len(inputPointSets)), setLinks):
+                    pointSetsForModel.append(np.concat([inputPointSets[combIdx] for combIdx in comb]))
+            else:
+                for comb in combinations(range(len(inputPointSets)), setLinks):
+                    pointSetsForModel.append(np.concat([inputPointSets[0][:2]]+
+                                                       [inputPointSets[combIdx][2:] for combIdx in comb]))
+        # Run model with new BQP sets
+        (coefsCurTheta, curObjVal,
+         unscaledCoefsCurTheta) = finalBQPModel(forbiddenRad, forbiddenTheta, dim,
+                                                maxGamma, maxDeg,
+                                                listOfPointSets=pointSetsForModel)
+        # If the set is full and we want to improve with NLP, then improve the pointset and run it again to verify
+        # the program found an improvement
+        if improvementWithFacets:
+            if listOfPointSets[iterationNr + 1].shape[0] == 6:
+                (foundBool, ineqPointset,
+                 facetStart) = facetInequalityBQPGammaless(dim, listOfPointSets[iterationNr + 1],
+                                                                                  unscaledCoefsCurTheta,
+                                                                                  startingFacet=facetStart)
+                if foundBool:
+                    inputPointSets = [ineqPointset] + fullPointSets
+                    if setLinks == 1:
+                        pointSetsForModel = inputPointSets
+                    elif len(fullPointSets) < setLinks:
+                        pointSetsForModel = [np.concat(inputPointSets)]
+                    else:
+                        pointSetsForModel = []
+                        for comb in combinations(range(len(inputPointSets)), setLinks):
+                            pointSetsForModel.append(np.concat([inputPointSets[combIdx] for combIdx in comb]))
+                    (coefsFacetTheta, facetObjVal,
+                     unscaledCoefsFacetTheta) = finalBQPModel(forbiddenRad, forbiddenTheta,
+                                                                dim, maxGamma, maxDeg,
+                                                                listOfPointSets=pointSetsForModel)
+
+                    print(f"facet ineqs gave us {facetObjVal}, instead of {curObjVal}")
+                    if facetObjVal < curObjVal:
+                        curObjVal = facetObjVal
+                        listOfPointSets[iterationNr + 1] = ineqPointset
+                        coefsCurTheta = coefsFacetTheta
+                        unscaledCoefsCurTheta = unscaledCoefsFacetTheta
+                    else:
+                        print(f"facets did not improve the solution ({facetObjVal} new, {curObjVal} old)")
+                else:
+                    print(f"did not find good facet (cur sol value {curObjVal})")
+
+        if curObjVal < bestObjVal:
+            if printBool:
+                if curObjVal < bestObjVal - 0.01 and curObjVal < 0.29:
+                    print(f"current objective value: {curObjVal}")
+                    print("Large Improvement with new Innerproducts:")
+                    print(newInnerproducts)
+        bestObjVal = curObjVal
+        coefThetaList.append(coefsCurTheta)
+        unscaledCoefThetaList.append(unscaledCoefsCurTheta)
+        # polyVcur = sum(polyList[kIdx] * coefsCurTheta[0][kIdx] for kIdx in range(maxDeg + 1))
+        # resultingpolyList.append(polyVcur)
+
+        # Counter incrementation
+        iterationNr += 1
+        print(f"Made set {setIdx} point {nrOfNextPoints} (obj {bestObjVal})")
+        if nrOfNextPoints == sizeOfBQPSet:
+            setIdx += 1
+            pointsInCurSet = 2
+        else:
+            pointsInCurSet = nrOfNextPoints
+
+
+
+    inputParameters = {"dim": dim, "maxDeg": maxDeg, "maxGamma": maxGamma,
+                       "forbiddenRad":forbiddenRad,"forbiddenTheta":forbiddenTheta,
+                       "sizeOfBQPSet":sizeOfBQPSet, "setAmount":setAmount, "setLinks":setLinks,
+                       "improvementWithFacets":improvementWithFacets,"sequentialEdges":sequentialEdges,
+                       "uniformCoordinateWise": uniformCoordinateWise, "reverseWeighted": reverseWeighted,
+                       "spreadPoints": spreadPoints,"compareToLowerBound":compareToLowerBound,
+                       "relativityScale": relativityScale}
+    usedPointSets = fullPointSets + [listOfPointSets[-1]]
+    usedPointSetDict = {f"point set {setNr}": usedPointSets[setNr].tolist() for setNr in range(len(usedPointSets))}
+    coefsThetaListsList = [coefArray.tolist() for coefArray in coefThetaList]
+    unscaledCoefsThetaListsList = [coefArray.tolist() for coefArray in unscaledCoefThetaList]
+    outputDict = {"objective": bestObjVal, "coeficients disk polynomials list": coefsThetaListsList,
+                  "unscaled coeficients": unscaledCoefsThetaListsList,
+                  "used point sets": usedPointSetDict,
+                  "input parameters": inputParameters}  # "resulting polynomials list":resultingpolyList,
+    return outputDict
+
+
+
+
+def onb_with_vector(v: np.ndarray) -> np.ndarray:
+    """
+    Return a unitary U whose first column is the given vector v (complex).
+    Columns of U form an orthonormal basis of C^d including v.
+    """
+    v = np.asarray(v, dtype=np.complex128).reshape(-1)
+    n = v.shape[0]
+    # Normalize v just in case
+    nv = np.linalg.norm(v)
+    if nv == 0:
+        raise ValueError("v must be nonzero")
+    v = v / nv
+
+    e1 = np.zeros(n, dtype=np.complex128)
+    e1[0] = 1.0
+
+    v1 = v[0]
+    alpha = v1/abs(v1) if abs(v1) > 1e-15 else 1.0 + 0j
+
+    u = v - alpha * e1
+    nu = np.linalg.norm(u)
+
+    if nu < 1e-15:
+        # v is colinear with e1: unitary is just a diagonal phase on e1
+        U = np.eye(n, dtype=np.complex128)
+        U[0, 0] = alpha  # first column = alpha * e1 = v
+    else:
+        u /= nu
+        H = np.eye(n, dtype=np.complex128) - 2.0 * np.outer(u, np.conjugate(u))
+        U = alpha * H  # unitary, and U @ e1 = v
+
+    # Sanity: columns are ON, first column equals v (up to numerical eps)
+    # assert np.allclose(U @ e1, v)
+    return U
 
 
 
@@ -1569,18 +2238,34 @@ def complex_to_json_safe(obj):
     raise TypeError(f"Type {type(obj)} not serializable")
 
 
-def quickJumpNavigator():
-    return "ok"
+def runTests(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
+    testSaveLocation = f"TestResults_{testType}_" + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
+    if not os.path.exists(testSaveLocation):
+        with open(testSaveLocation, "w") as f:
+            json.dump({}, f)
+    for testNr in range(testAmount):
+        testResult = finalBQPMethod(testComplexDimension,
+                                    forbiddenRad=forbiddenRadius, forbiddenTheta=forbiddenAngle,
+                                    **argsTest)
+        testResultDict = {f"TestNr{testNr}":testResult}
+        save_test_result(testResultDict, testSaveLocation)
+        del testResult, testResultDict
+    return
 
 
-if __name__ == '__main__':
-    testCompDim = 3
+def oldTests():
+    testCompDim = 2
+    rIntervalsTest = np.array([[0, 1]])
+    # rIntervalsTest = np.array([[1/np.sqrt(2),1]])   # np.array([[0,1]])
+    thetaIntervalsTest = np.array([[0, np.pi / 2]])
+    # thetaIntervalsTest = np.array([[0,np.pi/6], [np.pi*1/2,np.pi*5/6]])     # np.array([[0,np.pi]])
+    halfOpenRectsToCoefs(rIntervalsTest, thetaIntervalsTest, 40, 33, testCompDim)
     # quicktest= True
     solRads = 10
     solThetas = 25
     solPoints = solRads * solThetas
     weightPolyBase = complexWeightPolyCreator(testCompDim)
-    weightPolySec = complexWeightPolyCreator(testCompDim-1)
+    weightPolySec = complexWeightPolyCreator(testCompDim - 1)
     # criteria = [
     #     ((0.0, 1.0), (-np.pi / 2, np.pi / 2))
     # ]
@@ -1635,8 +2320,6 @@ if __name__ == '__main__':
     # print("Total difference 2:", sumDiff2)
     # print(res)
 
-
-
     # charMatrix = characteristicMatrix(6)
     # bqpVerts = np.zeros((64, 6, 6))
     # for idx in range(64):
@@ -1672,7 +2355,7 @@ if __name__ == '__main__':
     #
     #
 
-    testSaveLocation = "TestResults_"+datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
+    testSaveLocation = "TestResults_" + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
     if not os.path.exists(testSaveLocation):
         with open(testSaveLocation, "w") as f:
             json.dump({}, f)
@@ -1685,7 +2368,7 @@ if __name__ == '__main__':
         # n = 4
         #
         testMax = 0
-        testResults = np.ones((testMax,7))
+        testResults = np.ones((testMax, 7))
         testDimension = 3
         coefsCDCV2 = c_coeffs(testDimension, 50)
         nrOfWins = np.zeros(7)
@@ -1701,66 +2384,70 @@ if __name__ == '__main__':
         heighestWeightPointBase = np.sqrt(1 / (2 * (testDimension - 2) + 1))
         heighestWeightBase = weightPolyBase(heighestWeightPointBase)
         scaledWeightPolyBase = weightPolyBase / heighestWeightBase
-        cDCBase = SphereBasics.complexDoubleCapv2(testDimension, outputResBase, resolutionBase)
+        # cDCBase = SphereBasics.complexDoubleCapv2(testDimension, outputResBase, resolutionBase)
 
-        radiusSpaceBase = np.linspace(0, 1, outputResBase, endpoint=True)
+        # radiusSpaceBase = np.linspace(0, 1, outputResBase, endpoint=True)
 
-
-        polyEstCDCBase = Polynomial.fit(radiusSpaceBase, cDCBase, 4 * (testDimension - 1))
-        coefsPolyCDCBase = stripNonSpin(polyEstCDCBase, testDimension, 10 * outputResBase)
+        # polyEstCDCBase = Polynomial.fit(radiusSpaceBase, cDCBase, 4 * (testDimension - 1))
+        # coefsPolyCDCBase = stripNonSpin(polyEstCDCBase, testDimension, 10 * outputResBase)
+        coefsPolyCDCBase = c_coeffs(testDimension, maxDegAll)
         polyListBase = [createDiskPolyCosineless(testDimension, kIdx, 0) for kIdx in range(maxDegAll + 1)]
         basePolyBase = sum(polyListBase[kIdx] * coefsPolyCDCBase[kIdx] for kIdx in range(len(coefsPolyCDCBase)))
 
-
-
         bestObjValStart = iterativeProbabilisticImprovingBPQ(testDimension,
-                                                                maxIter=nrOfPointsets * (SizeOfPointSets-2),
-                                                                maxSetSize=SizeOfPointSets, maxDeg=maxDegAll,
-                                                                basePoly=basePolyBase, uniformCoordinateWise=True)
-        testResultDict = {"StartingTest":bestObjValStart}
+                                                             maxIter=nrOfPointsets * (SizeOfPointSets - 2),
+                                                             maxSetSize=SizeOfPointSets, maxDeg=maxDegAll,
+                                                             uniformCoordinateWise=True)
+        bestObjValStart = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                             maxIter=nrOfPointsets * (SizeOfPointSets - 2),
+                                                             maxSetSize=SizeOfPointSets, maxDeg=maxDegAll,
+                                                             basePoly=basePolyBase, uniformCoordinateWise=True)
+        testResultDict = {"StartingTest": bestObjValStart}
         save_test_result(testResultDict, testSaveLocation)
         del testResultDict, bestObjValStart
         for testNr in range(testMax):
-
             TrueRandom = modelMultipleBQP(0, 0, testDimension, 0,
-                             maxDegAll, nrOfPoints=SizeOfPointSets, nrOfPointSets=nrOfPointsets)[3]
+                                          maxDegAll, nrOfPoints=SizeOfPointSets, nrOfPointSets=nrOfPointsets)[3]
             bestObjValrelative = iterativeProbabilisticImprovingBPQ(testDimension,
-                                                                    maxIter=nrOfPointsets * (SizeOfPointSets-2),
+                                                                    maxIter=nrOfPointsets * (SizeOfPointSets - 2),
                                                                     maxSetSize=SizeOfPointSets, maxDeg=maxDegAll,
                                                                     basePoly=basePolyBase)
             bestObjValSpread = iterativeProbabilisticImprovingBPQ(testDimension,
-                                                                  maxIter=nrOfPointsets * (SizeOfPointSets-2),
+                                                                  maxIter=nrOfPointsets * (SizeOfPointSets - 2),
                                                                   maxSetSize=SizeOfPointSets,
                                                                   spreadPoints=True, maxDeg=maxDegAll,
-                                                                    basePoly=basePolyBase)
+                                                                  basePoly=basePolyBase)
             bestObjValInverse = iterativeProbabilisticImprovingBPQ(testDimension,
-                                                                      maxIter=nrOfPointsets * (SizeOfPointSets-2),
-                                                                      maxSetSize=SizeOfPointSets,
-                                                                      reverseWeighted=True, maxDeg=maxDegAll,
-                                                                    basePoly=basePolyBase)
+                                                                   maxIter=nrOfPointsets * (SizeOfPointSets - 2),
+                                                                   maxSetSize=SizeOfPointSets,
+                                                                   reverseWeighted=True, maxDeg=maxDegAll,
+                                                                   basePoly=basePolyBase)
 
-            bestObjValFlat = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*(SizeOfPointSets-2),
+            bestObjValFlat = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                                maxIter=nrOfPointsets * (SizeOfPointSets - 2),
                                                                 maxSetSize=SizeOfPointSets, relativityScale=0,
                                                                 maxDeg=maxDegAll,
-                                                                    basePoly=basePolyBase)
-            bestObjValScaled = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*(SizeOfPointSets-2),
+                                                                basePoly=basePolyBase)
+            bestObjValScaled = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                                  maxIter=nrOfPointsets * (SizeOfPointSets - 2),
                                                                   maxSetSize=SizeOfPointSets, relativityScale=1,
                                                                   maxDeg=maxDegAll,
-                                                                    basePoly=basePolyBase)
-            bestObjValUniform = iterativeProbabilisticImprovingBPQ(testDimension, maxIter=nrOfPointsets*(SizeOfPointSets-2),
+                                                                  basePoly=basePolyBase)
+            bestObjValUniform = iterativeProbabilisticImprovingBPQ(testDimension,
+                                                                   maxIter=nrOfPointsets * (SizeOfPointSets - 2),
                                                                    maxSetSize=SizeOfPointSets,
                                                                    uniformCoordinateWise=True, maxDeg=maxDegAll,
-                                                                    basePoly=basePolyBase)
+                                                                   basePoly=basePolyBase)
 
             testResultDict = {f"Random{testNr}": TrueRandom, f"Relative{testNr}": bestObjValrelative,
                               f"Spread{testNr}": bestObjValSpread, f"Inverse{testNr}": bestObjValInverse,
-                              f"Flat{testNr}": bestObjValFlat,f"Scaled{testNr}": bestObjValScaled,
+                              f"Flat{testNr}": bestObjValFlat, f"Scaled{testNr}": bestObjValScaled,
                               f"Uniform{testNr}": bestObjValUniform}
             save_test_result(testResultDict, testSaveLocation)
-            del testResultDict, TrueRandom, bestObjValrelative, bestObjValSpread,\
-                bestObjValInverse, bestObjValFlat, bestObjValScaled,bestObjValUniform
-             # testResultArray = np.array([TrueRandom,bestObjValSpread,bestObjValInverse,bestObjValrelative,bestObjValFlat,
-             #                             bestObjValScaled,bestObjValUniform])
+            del testResultDict, TrueRandom, bestObjValrelative, bestObjValSpread, \
+                bestObjValInverse, bestObjValFlat, bestObjValScaled, bestObjValUniform
+            # testResultArray = np.array([TrueRandom,bestObjValSpread,bestObjValInverse,bestObjValrelative,bestObjValFlat,
+            #                             bestObjValScaled,bestObjValUniform])
             # objErrorMask = (testResultArray < (1/2)**(testDimension-1))
             # testResultArray[objErrorMask] = 1/testDimension
             # winner = np.argmin(testResultArray)
@@ -1771,20 +2458,11 @@ if __name__ == '__main__':
         #     overalWinner = np.argmin(testResults)
         #     print(f"Nr of wins: {nrOfWins} (true random, relative error, flat error, scaled error, uniform coordinate)")
         #     print(f"Overal winner: {overalWinner} with Objective Value: {testResults.flatten()[overalWinner]}")
-
-
-
-
-
-
-
-
-
     else:
         testMatrix = characteristicMatrix(6)
-        modelBQP(0,0,3,15,15,nrOfPoints=14)
-        makeModelv2((dimension-3.0)/2.0, (dimension-3.0)/2.0, 0)
-        denomList = list(range(1,256))
+        modelBQP(0, 0, 3, 15, 15, nrOfPoints=14)
+        makeModelv2((dimension - 3.0) / 2.0, (dimension - 3.0) / 2.0, 0)
+        denomList = list(range(1, 256))
         nonSimpleSolutions = {}
         fixedMaxTime = 0
         stopAtMinTime = 0
@@ -1818,7 +2496,7 @@ if __name__ == '__main__':
                 thetaPartVal, thetaPartGamma, thetaPartK = findMinVar(testRad, testAng, dimension - 2)
                 stopAtMinTime += time.time() - samStart
                 if printBool:
-                    print(f"\t Found theta value: {-thetaPartVal/(1-thetaPartVal)} (thetapart: {thetaPartVal})")
+                    print(f"\t Found theta value: {-thetaPartVal / (1 - thetaPartVal)} (thetapart: {thetaPartVal})")
                     print(f"\t Value found at gamma: {thetaPartGamma}, k: {thetaPartK}")
                 if (thetaPartGamma > 0 and thetaPartK > 0) or (testRad < 1 and thetaPartGamma > 5) or thetaPartK > 5:
                     nonSimpleSolutions[testNr] = [thetaPartVal, testRad, testAng, thetaPartGamma, thetaPartK]
@@ -1841,6 +2519,21 @@ if __name__ == '__main__':
         #
         # # makeModelv2((dimension - 2.0), (dimension - 2.0), distanceForbidden)
         # makeModelCascading(dimension-2.0, distanceForbidden, newCalcForbiddenDistancev2)
+
+
+def quickJumpNavigator():
+    return "ok"
+
+
+if __name__ == '__main__':
+    allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",3:"uniformCoordinateWise"}
+    testDim = 3
+    testRad = 0
+    testTheta = 0
+    nrOfTests = 1
+    bqpType = allTestTypes[2]
+    testArgs = {bqpType:True, "maxDeg":200,"sizeOfBQPSet":6,"setAmount":6, "setLinks":2}
+    runTests(testDim,testRad,testTheta,nrOfTests,testArgs,bqpType)
 
 
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/

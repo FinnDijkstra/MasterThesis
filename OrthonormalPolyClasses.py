@@ -129,6 +129,22 @@ class DiskCombi:
         return solArray
 
 
+    def sumAtRow(self, r, theta, gamma):
+        r = np.asarray(r)
+        theta = np.asarray(theta)
+        if r.shape != theta.shape:
+            rCorrect, thetaCorrect = np.meshgrid(r, theta)
+        else:
+            rCorrect = r
+            thetaCorrect = theta
+        values = self.DiskList[gamma].calcAtRTheta(rCorrect, thetaCorrect)
+        coefs = self.coefficientArray[gamma]
+        reshapeShape = [1 for _ in range(len(rCorrect.shape)+1)]
+        reshapeShape[0] = coefs.shape[0]
+        coefsCorrect = coefs.reshape(reshapeShape)
+        return np.sum(np.multiply(values,coefsCorrect), axis=0)
+
+
     def findMinimalParams(self,r,theta):
         r = np.asarray(r)
         theta = np.asarray(theta)
@@ -203,14 +219,15 @@ class DiskCombi:
 
 
 
+
 class FastRadialEstimator:
-    def __init__(self, slow_function, resolution):
+    def __init__(self, slow_function, resolution,gamma):
         self.slow_function = slow_function  # Callable: f(r), r in [0,1]
         self.resolution = resolution
 
         # Precompute points at evenly spaced radii
         self.r_grid = np.linspace(0, 1, resolution, endpoint=True)
-        self.values = self.slow_function(self.r_grid,0)[0]
+        self.values = self.slow_function(self.r_grid,0,gamma)[0]
 
     def __call__(self, r_input):
         r_input = np.asarray(r_input)
@@ -230,6 +247,29 @@ class FastRadialEstimator:
         # Interpolate linearly
         result = (1 - frac) * self.values[i] + frac * self.values[idx2]
         return result
+
+
+class FastDiskCombiEstimator:
+    def __init__(self, alpha, coefficientArray, resolution):
+        self.alpha = alpha
+        self.kMax = coefficientArray.shape[1] - 1
+        self.gammaMax = coefficientArray.shape[0] - 1
+        self.coefficientArray = coefficientArray
+        self.diskCombi = DiskCombi(alpha,coefficientArray)
+        self.fastRadialEstimatorList = [FastRadialEstimator(self.diskCombi.sumAtRow, resolution, gammaIdx)
+                                        for gammaIdx in range(self.gammaMax+1)]
+
+    def __call__(self, r, theta):
+        r = np.asarray(r)
+        theta = np.asarray(theta)
+        if r.shape != theta.shape:
+            rCorrect, thetaCorrect = np.meshgrid(r, theta)
+        else:
+            rCorrect = r
+            thetaCorrect = theta
+        cosFactors = [np.cos(gammaIdx*thetaCorrect) for gammaIdx in range(self.gammaMax+1)]
+        radialFactors = [FRE(rCorrect) for FRE in self.fastRadialEstimatorList]
+        return sum(cosFactors[gammaIdx]*radialFactors[gammaIdx] for gammaIdx in range(self.gammaMax+1))
 
 
 if __name__ == "__main__":
