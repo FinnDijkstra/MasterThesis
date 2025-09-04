@@ -16,7 +16,7 @@ import os
 import datetime
 from multiprocessing import Pool, cpu_count
 from itertools import combinations
-
+import improvedBQPNLP
 
 
 from matplotlib import pyplot as plt
@@ -864,7 +864,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             baseSol = baseFlattenedStartingGuess
             randSol = flattenedStartingGuess
 
-
+            t0 = time.perf_counter()
             # randompoints as startingpoints
             try:
                 res = scipy.optimize.minimize(
@@ -884,8 +884,11 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                     succesRand = True
                 else:
                     succesRand = False
-
-
+            t1 = time.perf_counter()
+            resImpr = improvedBQPNLP.solve_problem(flattenedStartingGuess,shapeStartingGuess, startingPolynomial, facetIneqs, facetIdx)
+            t2 = time.perf_counter()
+            print(f"Old: {t1-t0} \n New:{t2-t1}")
+            x=1
             # input points as startingpoints
             try:
                 res = scipy.optimize.minimize(
@@ -2530,6 +2533,10 @@ if __name__ == '__main__':
     testDim = 3
     testRad = 0
     testTheta = 0
+    testMatrix = characteristicMatrix(6)
+    # modelBQP(0, 0, 3, 15, 15, nrOfPoints=14)
+    # for dimension in range(testDim, 20):
+    #     makeModelv2((dimension - 3.0) / 2.0, (dimension - 3.0) / 2.0, 0)
     nrOfTests = 1
     bqpType = allTestTypes[2]
     testArgs = {bqpType:True, "maxDeg":200,"sizeOfBQPSet":6,"setAmount":6, "setLinks":2}
