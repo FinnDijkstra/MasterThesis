@@ -65,28 +65,53 @@ def make_objective(W, shapeStartingGuess, startingPolynomial):
     def fun(S):
         P = polyVals_fast(S, shapeStartingGuess, startingPolynomial)
         # faster than sum(multiply(...)); vdot flattens and conjugates W (W is real anyway)
-        return -np.vdot(W, P).real
+        return -np.dot(W.ravel(), P.ravel()).real
+        # return np.dot(W.ravel(), P.ravel()).real
     return fun
 
 # ---------- Unit-norm-per-column constraints: exact sparse Jacobian & Hessian ----------
+# def make_norm_constraints(shapeStartingGuess):
+#     d_tot, m = shapeStartingGuess
+#     n = d_tot * m
+#     rows = np.repeat(np.arange(m), d_tot)
+#     cols = np.arange(n)
+#
+#     def c_fun(S):
+#         X = S.reshape(d_tot, m)
+#         return np.sum(X * X, axis=0) - 1.0     # (m,)
+#
+#     def c_jac(S):
+#         X = S.reshape(d_tot, m)
+#         data = 2.0 * X.ravel(order='C')
+#         return sparse.coo_matrix((data, (rows, cols)), shape=(m, n)).tocsr()
+#
+#     def c_hess(S, v):
+#         # sum_j v[j] * ∇²c_j  → diagonal with entries 2*v[col_index]
+#         diag = 2.0 * np.tile(np.asarray(v), d_tot)  # length n
+#         return sparse.diags(diag, format='csr')
+#
+#     return NonlinearConstraint(c_fun, 0.0, 0.0, jac=c_jac, hess=c_hess)
+
 def make_norm_constraints(shapeStartingGuess):
     d_tot, m = shapeStartingGuess
     n = d_tot * m
-    rows = np.repeat(np.arange(m), d_tot)
+
+    # map flat var index k -> column j = k % m  (C-order flatten)
+    rows = np.tile(np.arange(m), d_tot)   # <-- FIX: tile, not repeat
     cols = np.arange(n)
 
     def c_fun(S):
-        X = S.reshape(d_tot, m)
-        return np.sum(X * X, axis=0) - 1.0     # (m,)
+        X = S.reshape(d_tot, m)           # C-order
+        return np.sum(X*X, axis=0) - 1.0  # (m,)
 
     def c_jac(S):
-        X = S.reshape(d_tot, m)
+        X = S.reshape(d_tot, m)           # C-order
         data = 2.0 * X.ravel(order='C')
         return sparse.coo_matrix((data, (rows, cols)), shape=(m, n)).tocsr()
 
     def c_hess(S, v):
-        # sum_j v[j] * ∇²c_j  → diagonal with entries 2*v[col_index]
-        diag = 2.0 * np.tile(np.asarray(v), d_tot)  # length n
+        # for k=i*m + j, column is j = k % m -> diag = 2*v[j]
+        diag = 2.0 * np.tile(np.asarray(v), d_tot)
         return sparse.diags(diag, format='csr')
 
     return NonlinearConstraint(c_fun, 0.0, 0.0, jac=c_jac, hess=c_hess)
@@ -113,14 +138,19 @@ def solve_problem(x0, shapeStartingGuess, startingPolynomial, facetIneqs, facetI
 
     # Finite-diff for the objective gradient (fast & stable enough for your linear interpolant).
     # If you later supply an analytic/AD jac, drop 'jac' and pass 'jac=your_jac'.
-    options = dict(
-        gtol=1e-6,
-        xtol=1e-9,
-        barrier_tol=1e-8,
-        initial_tr_radius=1.0,
-        maxiter=1000,
-        finite_diff_rel_step=1e-6,  # tune if needed; keep comfortably smaller than ~1/(resolution-1)
-        verbose=0
+    # options = dict(
+    #     gtol=1e-6,
+    #     xtol=1e-8,
+    #     barrier_tol=1e-8,
+    #     initial_tr_radius=1.0,
+    #     maxiter=500,
+    #     finite_diff_rel_step=1e-6,  # tune if needed; keep comfortably smaller than ~1/(resolution-1)
+    #     verbose=0
+    # )
+    options= dict(
+        agents=4,  # number of parallel workers
+        finite_diff_rel_step=1e-6,  # keep as you tuned it
+        gtol=1e-6, xtol=1e-12, barrier_tol=1e-8
     )
 
     res = minimize(fun, x0,
@@ -129,4 +159,7 @@ def solve_problem(x0, shapeStartingGuess, startingPolynomial, facetIneqs, facetI
                    constraints=[nlc],
                    bounds=bounds,
                    options=options)
+    # X = res.x.reshape(shapeStartingGuess)
+    # col_norms = np.sqrt(np.sum(X * X, axis=0))
+    x=1
     return res
