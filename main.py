@@ -583,7 +583,13 @@ def finalBQPModel(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, k
                  f"with {nrOfPoints} BQP points,"
                  f" gamma checked {gammaMax}, k checked {kMax}")
     m.setParam("OutputFlag", 0)
-    m.setParam(GRB.Param.FeasibilityTol, 1e-8)
+    m.setParam(GRB.Param.FeasibilityTol, 1e-9)
+    m.setParam(GRB.Param.BarConvTol, 1e-12)
+    m.setParam(GRB.Param.BarQCPConvTol, 1e-12)
+    m.setParam(GRB.Param.MIPGap, 1e-12)
+    m.setParam(GRB.Param.IntFeasTol, 1e-9)
+    m.setParam(GRB.Param.PSDTol, 1e-12)
+    m.setParam(GRB.Param.OptimalityTol, 1e-9)
     # m.setParam(GRB.Param.DisplayInterval, 10)
     diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="diskpoly weights")
     m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum() * diskPolyWeights.sum() >= 0, "SDP contraint")
@@ -831,10 +837,10 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
                                                                      1j*S.reshape(shapeStartingGuess)[dim:]))
-    polyVals = lambda S:startingPolynomial((z2polar((S.reshape(shapeStartingGuess)[:dim]-
+    polyVals = lambda S:startingPolynomial(*(z2polar((S.reshape(shapeStartingGuess)[:dim]-
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
-                                                                     1j*S.reshape(shapeStartingGuess)[dim:])))[0])
+                                                                     1j*S.reshape(shapeStartingGuess)[dim:]))))
 
     bestFacet = 0
     sol = startingGuess
@@ -887,7 +893,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             t1 = time.perf_counter()
             resImpr = improvedBQPNLP.solve_problem(flattenedStartingGuess,shapeStartingGuess, startingPolynomial, facetIneqs, facetIdx)
             t2 = time.perf_counter()
-            print(f"Old: {t1-t0} \n New:{t2-t1}")
+            print(f"Old: {t1-t0} \n New:{t2-t1} \n Objectives: {res.fun} vs {resImpr.fun}")
             x=1
             # input points as startingpoints
             try:
@@ -1711,6 +1717,7 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
         # the program found an improvement
         if improvementWithFacets:
             if listOfPointSets[iterationNr + 1].shape[0] == 6:
+                print(f"Before face optimization obj {curObjVal}")
                 (foundBool, ineqPointset,
                  facetStart) = facetInequalityBQPGammaless(dim, listOfPointSets[iterationNr + 1],
                                                                                   unscaledCoefsCurTheta,
@@ -2539,7 +2546,7 @@ if __name__ == '__main__':
     #     makeModelv2((dimension - 3.0) / 2.0, (dimension - 3.0) / 2.0, 0)
     nrOfTests = 1
     bqpType = allTestTypes[2]
-    testArgs = {bqpType:True, "maxDeg":200,"sizeOfBQPSet":6,"setAmount":6, "setLinks":2}
+    testArgs = {bqpType:True, "maxDeg":200,"sizeOfBQPSet":6,"setAmount":5, "setLinks":2, "improvementWithFacets":True}
     runTests(testDim,testRad,testTheta,nrOfTests,testArgs,bqpType)
 
 

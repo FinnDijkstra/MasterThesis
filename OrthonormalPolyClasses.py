@@ -1,7 +1,9 @@
+import time
+
 import numpy as np
 import scipy as sp
 from math import comb
-
+from threadpoolctl import threadpool_info
 # import plot2dCharts
 
 
@@ -267,36 +269,67 @@ class FastDiskCombiEstimator:
         else:
             rCorrect = r
             thetaCorrect = theta
-        cosFactors = [np.cos(gammaIdx*thetaCorrect) for gammaIdx in range(self.gammaMax+1)]
-        radialFactors = [FRE(rCorrect) for FRE in self.fastRadialEstimatorList]
-        return sum(cosFactors[gammaIdx]*radialFactors[gammaIdx] for gammaIdx in range(self.gammaMax+1))
+        cosFactors = np.array([np.cos(gammaIdx*thetaCorrect) for gammaIdx in range(self.gammaMax+1)])
+        radialFactors = np.array([FRE(rCorrect) for FRE in self.fastRadialEstimatorList])
+        return np.sum(np.multiply(cosFactors,radialFactors),axis=0)
+        # cosFactors = [np.cos(gammaIdx * thetaCorrect) for gammaIdx in range(self.gammaMax + 1)]
+        # radialFactors = [FRE(rCorrect) for FRE in self.fastRadialEstimatorList]
+        # return sum(cosFactors[gammaIdx]*radialFactors[gammaIdx] for gammaIdx in range(self.gammaMax+1))
+
+
+
+def bench(n=6, reps=600):
+    coefs = np.random.random((15,15))
+    coefs /= np.sum(coefs)
+    estimatorDisk = FastDiskCombiEstimator(1,coefs,1000)
+    diskPoly = DiskCombi(1,coefs)
+    t1 = 0.0
+    t2 = 0.0
+    totalDiff = 0.0
+    for _ in range(reps):
+        A = np.random.random((n, n))
+        B = np.random.random((n, n))*2*np.pi
+        t0 = time.perf_counter()
+        C1 = estimatorDisk(A,B)
+        t1 += time.perf_counter() - t0
+        t0 = time.perf_counter()
+        C2 = diskPoly(A,B)
+        t2 += time.perf_counter() - t0
+        totalDiff += np.sum(np.abs(C1-C2))
+    print(f"Fast {t1}s, Original {t2}s, diff {totalDiff/n/n}")
+    return
 
 
 if __name__ == "__main__":
-    rRes = 500 + 1
-    thetaRes = 1000 + 1
-    rGrid = np.linspace(0, 1, rRes, endpoint=True)
-    r2Grid = np.sqrt(rGrid)
-    thetaGrid = np.linspace(0, 2 * np.pi, thetaRes, endpoint=True)
-    rMesh,thetaMesh  = np.meshgrid(rGrid, thetaGrid)
-    r2Mesh, theta2Mesh = np.meshgrid(r2Grid, thetaGrid)
-    cosMesh = np.cos(thetaMesh)
-    sinMesh = np.sin(thetaMesh)
-    xMesh = cosMesh*rMesh
-    yMesh = sinMesh*rMesh
-    coefArray = np.ones((50, 20)) / 4000
-    complexDimension = 4
-    totalDisk = DiskCombi(complexDimension-2, coefArray)
-    # bestGamma, bestK = totalDisk.findMinimalParams(rGrid, thetaGrid)
-    bestGamma, bestK, minimalValues = totalDisk.findMinimalParams(r2Grid,thetaGrid)
-    # plot2dCharts.groupedPolarPlot(rMesh, thetaMesh, bestGamma, bestK, 5, 5)
-    graphTitle = "Parameters for best disk polynomial\n" + fr"in $\mathbb{{C}}^{{{complexDimension}}}$ "
-    # plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10,graphTitle,
-    #                               legendBool=False, minVals = minimalValues, plot3dBool = True, comDim=complexDimension)
-    bestGammaMask = (bestGamma>0)
-    bestKMask = (bestK >0)
-    print(np.sum(bestKMask*bestGammaMask))
-    x=1
+    testSpeed = True
+    if testSpeed:
+        for I in range(5):
+            bench()
+    else:
+        rRes = 500 + 1
+        thetaRes = 1000 + 1
+        rGrid = np.linspace(0, 1, rRes, endpoint=True)
+        r2Grid = np.sqrt(rGrid)
+        thetaGrid = np.linspace(0, 2 * np.pi, thetaRes, endpoint=True)
+        rMesh,thetaMesh  = np.meshgrid(rGrid, thetaGrid)
+        r2Mesh, theta2Mesh = np.meshgrid(r2Grid, thetaGrid)
+        cosMesh = np.cos(thetaMesh)
+        sinMesh = np.sin(thetaMesh)
+        xMesh = cosMesh*rMesh
+        yMesh = sinMesh*rMesh
+        coefArray = np.ones((50, 20)) / 4000
+        complexDimension = 4
+        totalDisk = DiskCombi(complexDimension-2, coefArray)
+        # bestGamma, bestK = totalDisk.findMinimalParams(rGrid, thetaGrid)
+        bestGamma, bestK, minimalValues = totalDisk.findMinimalParams(r2Grid,thetaGrid)
+        # plot2dCharts.groupedPolarPlot(rMesh, thetaMesh, bestGamma, bestK, 5, 5)
+        graphTitle = "Parameters for best disk polynomial\n" + fr"in $\mathbb{{C}}^{{{complexDimension}}}$ "
+        # plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10,graphTitle,
+        #                               legendBool=False, minVals = minimalValues, plot3dBool = True, comDim=complexDimension)
+        bestGammaMask = (bestGamma>0)
+        bestKMask = (bestK >0)
+        print(np.sum(bestKMask*bestGammaMask))
+        x=1
 
 # diskPoly = Disk(1,2,3)
 # # print(diskPoly(np.sqrt(1/2),0,2))

@@ -661,10 +661,10 @@ if __name__ == "__main__":
     clt2 = centerTop2 - sideDelta
     crt2 = centerTop2 + sideDelta
     if bodiesBool:
-        draw_convex_hull(ax, fig1Matrix, color='cyan', shadowBool=False, edgecolor='k', alpha=0.3)
-        draw_convex_hull(ax, negFig2, color='cyan', shadowBool=False, edgecolor='k', alpha=0.3)
-        draw_convex_hull(ax, posFig2, color='cyan', shadowBool=False, edgecolor='k', alpha=0.3)
-        draw_convex_hull(ax, fig3Matrix, color='cyan', shadowBool=False, edgecolor='k', alpha=0.3)
+        draw_convex_hull(ax, fig1Matrix, color='cyan', shadowBool=False, edgecolor='k', alpha=0.5)
+        draw_convex_hull(ax, negFig2, color='cyan', shadowBool=False, edgecolor='k', alpha=0.5)
+        draw_convex_hull(ax, posFig2, color='cyan', shadowBool=False, edgecolor='k', alpha=0.5)
+        draw_convex_hull(ax, fig3Matrix, color='cyan', shadowBool=False, edgecolor='k', alpha=0.5)
         # x_range = (0.2, 0.7)
         # y_range = (0.2 * np.pi, 1.2 * np.pi)
         # z_range = (0.8 * np.pi, 1.8 * np.pi)
