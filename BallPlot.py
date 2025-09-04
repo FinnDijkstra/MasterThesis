@@ -298,31 +298,25 @@ def draw_set(ax, r_bounds, t1_bounds, t2_bounds, shadowBool=True, ccount=1,
 
 
 def draw_line(ax, p1, p2, shadowBool=False, guidesBool=False, **kwargs):
-    ax.plot([p1[0],p2[0]], [p1[1],p2[1]], [p1[2],p2[2]], **kwargs)
-    if shadowBool:
-        alpha = kwargs.get('alpha', 1)
-        shadow_alpha = alpha / 2
-        shadow_kwargs = kwargs.copy()
-        shadow_kwargs['alpha'] = shadow_alpha
-        if shadow_kwargs.get("marker","0") == "_":
-            shadow_kwargs["marker"] = "|"
-        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [0, 0], **shadow_kwargs)
-    if guidesBool:
-        line_kwargs = shadow_kwargs.copy()
-        line_kwargs["linestyle"] = (0, (5, 10))
-        line_kwargs["linewidth"] = shadow_kwargs["linewidth"]/2
-        ax.plot(
-            [p1[0], p1[0]],
-            [p1[1], p1[1]],
-            [p1[2], 0],
-            **line_kwargs
-        )
-        ax.plot(
-            [p2[0], p2[0]],
-            [p2[1], p2[1]],
-            [p2[2], 0],
-            **line_kwargs
-        )
+    def draw_line(ax, p1, p2, shadowBool=False, guidesBool=False, **kwargs):
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]], **kwargs)
+
+        # Base for derived lines (shadow/guides)
+        base = kwargs.copy()
+        base['alpha'] = kwargs.get('alpha', 1) / 2
+
+        if shadowBool:
+            shadow_kwargs = base.copy()
+            if shadow_kwargs.get("marker", "0") == "_":
+                shadow_kwargs["marker"] = "|"
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [0, 0], **shadow_kwargs)
+
+        if guidesBool:
+            line_kwargs = base.copy()
+            line_kwargs["linestyle"] = (0, (5, 10))
+            line_kwargs["linewidth"] = kwargs.get("linewidth", 1) / 2
+            ax.plot([p1[0], p1[0]], [p1[1], p1[1]], [p1[2], 0], **line_kwargs)
+            ax.plot([p2[0], p2[0]], [p2[1], p2[1]], [p2[2], 0], **line_kwargs)
 
 
 def draw_custom_r_ticks(ax, ticks=np.linspace(0,1,5),tickwidth=1):
@@ -433,7 +427,7 @@ def draw_hull_shadow_and_projections(ax, points, hull, **kwargs):
         )
     poly3d = Poly3DCollection(relevantCoords[shadowSimplices], **shadow_kwargs)
     ax.add_collection3d(poly3d)
-    # draw_convex_hull(ax,relevantCoords,shadowBool=False,**kwargs)
+
     # if faces_for_shadow:
     #     shadow_poly = Poly3DCollection(
     #         faces_for_shadow,

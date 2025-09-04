@@ -159,7 +159,5 @@ def solve_problem(x0, shapeStartingGuess, startingPolynomial, facetIneqs, facetI
                    constraints=[nlc],
                    bounds=bounds,
                    options=options)
-    # X = res.x.reshape(shapeStartingGuess)
-    # col_norms = np.sqrt(np.sum(X * X, axis=0))
-    x=1
+
     return res
