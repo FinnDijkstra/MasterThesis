@@ -473,9 +473,14 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                                                                      1j*S.reshape(shapeStartingGuess)[dim:]))))
 
     bestFacet = 0
+    bestType = "None"
     sol = startingGuess
     lastImprovement = 0
     facetIdx = startingFacet + 1
+    scoreboard = {"delivered":0,"random":0,"tie":0, "bad":0}
+    goalboard = {"delivered":0,"random":0}
+    facetNr = 0
+    goals = 0
     if validIneqs:
         nrOfFacets = betas.shape[0]
         if maxDryRun == -1:
@@ -496,8 +501,8 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
 
             succesBase = False
             succesRand = False
-            baseObj = 0
-            randObj = 0
+            baseObj = 100
+            randObj = 100
             baseSol = startingPointset
             randSol = startingLocations
             # objv2 = improvedBQPNLP.make_objective(facetIneqs[facetIdx], shapeStartingGuess, startingPolynomial)
@@ -528,9 +533,10 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             else:
                 relativeObjective = (betas[facetIdx]+res.fun) / relativeSizeV1  # / relativeSizes[facetIdx]
                 # print(relativeObjective)
+                randObj = relativeObjective
                 if relativeObjective < bestFacet: # and res.constr_violation < 1e-8:
                     randSol = minimizationUnconstrained.Z_from_unconstrained_normalize(res.x,n=dim,m=6)
-                    randObj = relativeObjective
+
                     succesRand = True
                 else:
                     succesRand = False
@@ -572,6 +578,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             else:
                 relativeObjective = (res.fun+betas[facetIdx]) / relativeSizeV1 # / relativeSizes[facetIdx]
                 # print(f"suc{res.x},obj{relativeObjective}")
+                baseObj = relativeObjective
                 if relativeObjective < bestFacet: # and res.constr_violation < 1e-8:
                     # baseSol = res.x.reshape(shapeStartingGuess)
                     baseSol = minimizationUnconstrained.Z_from_unconstrained_normalize(res.x,n=dim,m=6)
@@ -584,12 +591,22 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             resObj = baseObj
             resSol = baseSol
             succesRes = succesBase
+            resType = "delivered"
 
             if succesRand:
                 if randObj < baseObj:
                     resObj = randObj
                     resSol = randSol
                     succesRes = succesRand
+                    resType = "random"
+            if baseObj > 0 and randObj > 0:
+                scoreboard["bad"] += 1
+            elif baseObj < randObj:
+                scoreboard["delivered"] += 1
+            elif baseObj > randObj:
+                scoreboard["random"] += 1
+            else:
+                scoreboard["tie"] += 1
             # print(f"suc{succesRes},obj{resObj}")
             # Update best sol
             if succesRes:
@@ -597,6 +614,9 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                 lastImprovement = 0
                 bestFacet = resObj
                 sol = resSol
+                bestType = resType
+                goalboard[bestType] += 1
+                goals += 1
             else:
                 lastImprovement += 1
 
@@ -1218,11 +1238,11 @@ def runModelFromFile(filename,adjustedKmax, adjustGammaMax):
 
 
 if __name__ == '__main__':
-    readPointsetAndRunModelWith("TestResults_sequentialEdges_07_09_14-32.json", "TestNr0",
-                                overridingSetting={"maxDeg":1200, "setLinks":5})
+    # readPointsetAndRunModelWith("TestResults_sequentialEdges_07_09_14-32.json", "TestNr0",
+    #                             overridingSetting={"maxDeg":1200, "setLinks":5})
     # gc.disable()
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",3:"uniformCoordinateWise"}
-    testDim = 6
+    testDim = 3
     testRad = 0
     testTheta = 0
     testMatrix = characteristicMatrix(6)
@@ -1231,9 +1251,9 @@ if __name__ == '__main__':
     #     makeModelv2((dimension - 3.0) / 2.0, (dimension - 3.0) / 2.0, 0)
     nrOfTests = 10
     bqpType = allTestTypes[2]
-    testArgs = {bqpType:True, "maxDeg":500,"sizeOfBQPSet":6,"setAmount":5, "setLinks":2, "improvementWithFacets":True}
-    for setSize in range(2,testArgs["setLinks"]*testArgs["sizeOfBQPSet"]+1):
-        charMatrixDict[setSize] = characteristicMatrix(setSize)
+    testArgs = {bqpType:True, "maxDeg":1500,"sizeOfBQPSet":6,"setAmount":5, "setLinks":5, "improvementWithFacets":True}
+    # for setSize in range(2,testArgs["setLinks"]*testArgs["sizeOfBQPSet"]+1):
+    #     charMatrixDict[setSize] = characteristicMatrix(setSize)
     runTests(testDim,testRad,testTheta,nrOfTests,testArgs,bqpType)
 
 
