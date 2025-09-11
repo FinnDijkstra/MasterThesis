@@ -17,6 +17,20 @@ import datetime
 from multiprocessing import Pool, cpu_count
 from itertools import combinations
 import improvedBQPNLP
+from main import (nrOfVars, distanceForbidden, facetReader, onb_with_vector, characteristicMatrix,
+                  facetInequalityBQPGammaless, halfOpenRectsToCoefs,c_coeffs,save_test_result)
+from matplotlib import pyplot as plt
+
+import SphereBasics
+from line_profiler import LineProfiler
+from numpy.polynomial import Polynomial
+
+from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, \
+    integratedWeightPolyCreator, createRandomPointsComplex
+
+from OrthonormalPolyClasses import Jacobi, Disk, DiskCombi, FastRadialEstimator, FastDiskCombiEstimator
+
+
 def thetaBasedOnThetapart(tpVal):
     return (-tpVal)/(1-tpVal)
 
@@ -1641,3 +1655,14 @@ def oldTests():
         # # makeModelv2((dimension - 2.0), (dimension - 2.0), distanceForbidden)
         # makeModelCascading(dimension-2.0, distanceForbidden, newCalcForbiddenDistancev2)
 
+nrOfVars = 10
+nrOfTests = 200
+dimension = 5
+distanceForbidden = 0
+jacobiType = "new"
+
+polar2z = lambda r, theta: r * np.exp(1j * theta)
+z2polar = lambda z: (np.abs(z), np.angle(z))
+
+if __name__ == '__main__':
+    makeModelv2((dimension-3)/2,(dimension-3)/2,distanceForbidden)

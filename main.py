@@ -1,4 +1,5 @@
 # from typing import final
+import re
 import time
 import gurobipy as gp
 from gurobipy import GRB
@@ -38,12 +39,35 @@ dimension = 4
 distanceForbidden = 0
 jacobiType = "new"
 charMatrixDict = {}
+_RX = re.compile(
+    r'^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([+-])\s*j\*\s*'
+    r'([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$'
+)
 
 polar2z = lambda r, theta: r * np.exp(1j * theta)
 z2polar = lambda z: (np.abs(z), np.angle(z))
 rss = lambda: psutil.Process(os.getpid()).memory_info().rss/1024**2  # MB
 
 
+def stitchSets(arrayList, setLinks, keepInitials=True):
+    if setLinks == 1:
+        combedArrays = arrayList
+    elif len(arrayList) <= setLinks:
+        if keepInitials:
+            combedArrays = [np.concat(arrayList)]
+        else:
+            combedArrays = [np.concat([arrayList[0][:2]] + [arrayList[setIdx][2:]
+                                                                      for setIdx in range(len(arrayList))])]
+    else:
+        combedArrays = []
+        if keepInitials:
+            for comb in combinations(range(len(arrayList)), setLinks):
+                combedArrays.append(np.concat([arrayList[combIdx] for combIdx in comb]))
+        else:
+            for comb in combinations(range(len(arrayList)), setLinks):
+                combedArrays.append(np.concat([arrayList[0][:2]] +
+                                                   [arrayList[combIdx][2:] for combIdx in comb]))
+    return combedArrays
 
 
 def characteristicMatrix(nrOfPoints):
@@ -225,14 +249,17 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
         m = gp.Model(env=env)
         m.setParam("OutputFlag", 0)
         m.setParam(GRB.Param.FeasibilityTol, 1e-9)
-        m.setParam(GRB.Param.BarConvTol, 1e-12)
-        m.setParam(GRB.Param.BarQCPConvTol, 1e-12)
-        m.setParam(GRB.Param.MIPGap, 1e-12)
-        m.setParam(GRB.Param.IntFeasTol, 1e-9)
-        m.setParam(GRB.Param.PSDTol, 1e-12)
+        # m.setParam(GRB.Param.BarConvTol, 1e-12)
+        # m.setParam(GRB.Param.BarQCPConvTol, 1e-12)
+        # m.setParam(GRB.Param.MIPGap, 1e-12)
+        # m.setParam(GRB.Param.IntFeasTol, 1e-9)
+        # m.setParam(GRB.Param.PSDTol, 1e-12)
         m.setParam(GRB.Param.OptimalityTol, 1e-9)
-        # keep tolerances sane; ultra-tight tolerances balloon workspace usage
-        # m.setParam(GRB.Param.OptimalityTol, 1e-9)  # only set what you truly need
+        m.setParam(GRB.Param.DualReductions, 0)
+        m.setParam(GRB.Param.NonConvex, 2)
+        m.setParam(GRB.Param.Method, 1)
+        m.setParam(GRB.Param.NumericFocus, 2)
+        # m.setParam(GRB.Param.Presolve, 0)
 
         diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="w")
 
@@ -245,8 +272,9 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
 
         # “SDP” constraint you coded (quadratic)
         m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum()*diskPolyWeights.sum() >= 0)
-
+        setWeightVars = []
         # Build per–point-set pieces
+        largestSet = 0
         for ps_idx in range(nrOfPointSets):
             pts = listOfPointSets[ps_idx]
             n = pts.shape[0]
@@ -256,6 +284,8 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
             nrSets = charM.shape[1]
             setW = m.addVars(nrSets, vtype=GRB.CONTINUOUS, lb=0, name=f"s_{ps_idx}")
             m.addConstr(setW.sum() == 1)
+            if nrSets > largestSet:
+                largestSet = nrSets
 
             # IPM and disk poly values (avoid 4-D tensor; see §3)
             ipm = pts @ pts.conj().T
@@ -277,7 +307,7 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
                     # use nonzeros only
                     nz = np.flatnonzero(charM[i] * charM[j])
                     m.addConstr(lin == gp.quicksum(setW[s] for s in nz))
-
+            setWeightVars.append(setW)
         m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
 
         # Lower-bound loop
@@ -287,7 +317,7 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
             lb = m.addConstr(diskPolyWeights.sum() >= (0.5)**p)
             m.update()
             m.optimize()
-            if m.Status == GRB.INFEASIBLE:
+            if m.Status != GRB.OPTIMAL and m.Status != GRB.SUBOPTIMAL:
                 m.remove(lb)
                 p += 1
             else:
@@ -297,8 +327,10 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
         diskWeightsArray = np.array([[diskPolyWeights[g, k].X for k in range(kMax)]
                                      for g in range(gammaMax)])
         adjustedDWA = diskWeightsArray / diskSum
+        objBound = m.objBound
+        print(f"primal dual difference: {objBound-diskSum}")
         # print("b) return:", rss())
-        return adjustedDWA, diskSum, diskWeightsArray
+        return adjustedDWA, max(objBound,diskSum), diskWeightsArray
 
     finally:
         # Ensure native memory is released
@@ -859,23 +891,24 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
 
         # Append sets together according to setLinks
         inputPointSets = [listOfPointSets[iterationNr + 1]] + fullPointSets
-        if setLinks == 1:
-            pointSetsForModel = inputPointSets
-        elif len(fullPointSets) < setLinks:
-            if improvementWithFacets:
-                pointSetsForModel = [np.concat(inputPointSets)]
-            else:
-                pointSetsForModel = [np.concat([inputPointSets[0][:2]]+[inputPointSets[setIdx][2:]
-                                                                        for setIdx in range(len(inputPointSets))])]
-        else:
-            pointSetsForModel = []
-            if improvementWithFacets:
-                for comb in combinations(range(len(inputPointSets)), setLinks):
-                    pointSetsForModel.append(np.concat([inputPointSets[combIdx] for combIdx in comb]))
-            else:
-                for comb in combinations(range(len(inputPointSets)), setLinks):
-                    pointSetsForModel.append(np.concat([inputPointSets[0][:2]]+
-                                                       [inputPointSets[combIdx][2:] for combIdx in comb]))
+        pointSetsForModel = stitchSets(inputPointSets, setLinks, improvementWithFacets)
+        # if setLinks == 1:
+        #     pointSetsForModel = inputPointSets
+        # elif len(fullPointSets) < setLinks:
+        #     if improvementWithFacets:
+        #         pointSetsForModel = [np.concat(inputPointSets)]
+        #     else:
+        #         pointSetsForModel = [np.concat([inputPointSets[0][:2]]+[inputPointSets[setIdx][2:]
+        #                                                                 for setIdx in range(len(inputPointSets))])]
+        # else:
+        #     pointSetsForModel = []
+        #     if improvementWithFacets:
+        #         for comb in combinations(range(len(inputPointSets)), setLinks):
+        #             pointSetsForModel.append(np.concat([inputPointSets[combIdx] for combIdx in comb]))
+        #     else:
+        #         for comb in combinations(range(len(inputPointSets)), setLinks):
+        #             pointSetsForModel.append(np.concat([inputPointSets[0][:2]]+
+        #                                                [inputPointSets[combIdx][2:] for combIdx in comb]))
         # Run model with new BQP sets
         (coefsCurTheta, curObjVal,
          unscaledCoefsCurTheta) = finalBQPModelv2(forbiddenRad, forbiddenTheta, dim,
@@ -893,14 +926,15 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
 
                 if foundBool:
                     inputPointSets = [ineqPointset] + fullPointSets
-                    if setLinks == 1:
-                        pointSetsForModel = inputPointSets
-                    elif len(fullPointSets) < setLinks:
-                        pointSetsForModel = [np.concat(inputPointSets)]
-                    else:
-                        pointSetsForModel = []
-                        for comb in combinations(range(len(inputPointSets)), setLinks):
-                            pointSetsForModel.append(np.concat([inputPointSets[combIdx] for combIdx in comb]))
+                    pointSetsForModel = stitchSets(inputPointSets, setLinks)
+                    # if setLinks == 1:
+                    #     pointSetsForModel = inputPointSets
+                    # elif len(fullPointSets) < setLinks:
+                    #     pointSetsForModel = [np.concat(inputPointSets)]
+                    # else:
+                    #     pointSetsForModel = []
+                    #     for comb in combinations(range(len(inputPointSets)), setLinks):
+                    #         pointSetsForModel.append(np.concat([inputPointSets[combIdx] for combIdx in comb]))
                     (coefsFacetTheta, facetObjVal,
                      unscaledCoefsFacetTheta) = finalBQPModelv2(forbiddenRad, forbiddenTheta,
                                                                 dim, maxGamma, maxDeg,
@@ -1096,6 +1130,29 @@ def complex_to_json_safe(obj):
         return f"{obj.real}+ j*{obj.imag}"
     raise TypeError(f"Type {type(obj)} not serializable")
 
+def strToComp(s):
+    m = _RX.match(s)
+    if not m:
+        return s  # leave non-complex strings untouched
+    real = float(m.group(1))
+    sign = 1.0 if m.group(2) == '+' else -1.0
+    imag = float(m.group(3)) * sign
+    return complex(real, imag)
+
+def listToCompArray(x):
+    if isinstance(x, dict):
+        return {curKey:listToCompArray(curVal) for curKey, curVal in x.items()}
+    if isinstance(x, list):
+        return np.array([listToCompArray(v) for v in x], dtype=complex)
+    if isinstance(x, str):
+        return strToComp(s=x)
+    return x
+#
+# def json_to_complex_ndarray(json_text):
+#     data = json.loads(json_text)
+#     nested = _walk_convert(data)
+#     return np.array(nested, dtype=complex)
+
 
 def runTests(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
     testSaveLocation = f"TestResults_{testType}_" + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
@@ -1132,6 +1189,26 @@ def runTestsv2(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount
         f.write('\n}\n')  # close JSON object
 
 
+def readPointsetAndRunModelWith(fileLocation,testKey, overridingSetting=None):
+    if overridingSetting is None:
+        overridingSetting = {}
+    file = open(fileLocation)
+    dataDict = json.load(file)[testKey]
+    del dataDict["coeficients disk polynomials list"], dataDict["unscaled coeficients"]
+    pointsets = listToCompArray(dataDict["used point sets"])
+    listOfStichedSets = stitchSets(list(pointsets.values()), dataDict["input parameters"]["setLinks"])
+    inputParams = dataDict["input parameters"]
+    inputParams.update(overridingSetting)
+    finalBQPModelv2(inputParams["forbiddenRad"],
+                    inputParams["forbiddenTheta"],
+                    inputParams["dim"],
+                    inputParams["maxGamma"],
+                    inputParams["maxDeg"],
+                    listOfStichedSets)
+    yeah = "yeah"
+
+
+
 def quickJumpNavigator():
     return "ok"
 
@@ -1141,6 +1218,8 @@ def runModelFromFile(filename,adjustedKmax, adjustGammaMax):
 
 
 if __name__ == '__main__':
+    readPointsetAndRunModelWith("TestResults_sequentialEdges_07_09_14-32.json", "TestNr0",
+                                overridingSetting={"maxDeg":1200, "setLinks":5})
     # gc.disable()
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",3:"uniformCoordinateWise"}
     testDim = 6
