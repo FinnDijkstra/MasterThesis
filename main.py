@@ -17,14 +17,16 @@ import datetime
 from multiprocessing import Pool, cpu_count
 from itertools import combinations
 import improvedBQPNLP
-
-
+from pympler import asizeof
+import psutil
+import gc
 from matplotlib import pyplot as plt
 
 import SphereBasics
 from line_profiler import LineProfiler
 from numpy.polynomial import Polynomial
 
+import minimizationUnconstrained
 from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, \
     integratedWeightPolyCreator, createRandomPointsComplex
 
@@ -35,9 +37,13 @@ nrOfTests = 200
 dimension = 4
 distanceForbidden = 0
 jacobiType = "new"
+charMatrixDict = {}
 
 polar2z = lambda r, theta: r * np.exp(1j * theta)
 z2polar = lambda z: (np.abs(z), np.angle(z))
+rss = lambda: psutil.Process(os.getpid()).memory_info().rss/1024**2  # MB
+
+
 
 
 def characteristicMatrix(nrOfPoints):
@@ -64,100 +70,246 @@ def finalBQPModel(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, k
                                                                             baseZ=forbiddenZ)[0])
     else:
         nrOfPointSets = len(listOfPointSets)
-    charMatricesList = []
-    setSizeList = []
-    nrOfPointsList = []
-    IPMList = []
-    diskPolyValueTensorList = []
-    diskPolysByGamma = [Disk(alpha, curGamma, kMax-1) for curGamma in range(gammaMax)]
+    # charMatricesList = []
+    try:
+        setSizeList = []
+        nrOfPointsList = []
+        IPMList = []
+        diskPolyValueTensorList = []
+        diskPolysByGamma = [Disk(alpha, curGamma, kMax-1) for curGamma in range(gammaMax)]
 
-    for pointSetIdx in range(nrOfPointSets):
-        pointSet = listOfPointSets[pointSetIdx]
-        nrOfPoints = pointSet.shape[0]
-        charMatrix = characteristicMatrix(nrOfPoints)
-        nrOfSets = charMatrix.shape[1]
+        for pointSetIdx in range(nrOfPointSets):
+            pointSet = listOfPointSets[pointSetIdx]
+            nrOfPoints = pointSet.shape[0]
+            # charMatrix = characteristicMatrix(nrOfPoints)
+            nrOfSets = 2**nrOfPoints
 
-        innerProductMatrix = pointSet @ pointSet.conj().T
-        ipmRads, ipmAngles = z2polar(innerProductMatrix)
-        diskPolyValueTensor = np.zeros((gammaMax, kMax, nrOfPoints, nrOfPoints))
+            innerProductMatrix = pointSet @ pointSet.conj().T
+            ipmRads, ipmAngles = z2polar(innerProductMatrix)
+            diskPolyValueTensor = np.zeros((gammaMax, kMax, nrOfPoints, nrOfPoints))
+            for gamma in range(gammaMax):
+                diskPolyValueTensor[gamma] = diskPolysByGamma[gamma].calcAtRTheta(ipmRads, ipmAngles)
+            # charMatricesList.append(charMatrix)
+            setSizeList.append(nrOfSets)
+            nrOfPointsList.append(nrOfPoints)
+            IPMList.append(innerProductMatrix)
+            diskPolyValueTensorList.append(diskPolyValueTensor)
+        forbiddenInnerproductVals = np.zeros((gammaMax,kMax))
         for gamma in range(gammaMax):
-            diskPolyValueTensor[gamma] = diskPolysByGamma[gamma].calcAtRTheta(ipmRads, ipmAngles)
-        charMatricesList.append(charMatrix)
-        setSizeList.append(nrOfSets)
-        nrOfPointsList.append(nrOfPoints)
-        IPMList.append(innerProductMatrix)
-        diskPolyValueTensorList.append(diskPolyValueTensor)
-    forbiddenInnerproductVals = np.zeros((gammaMax,kMax))
-    for gamma in range(gammaMax):
-        forbiddenInnerproductVals[gamma] = diskPolysByGamma[gamma].calcAtRTheta(forbiddenRadius, forbiddenAngle)
-    m = gp.Model(f"BQP model for forbidden innerproduct {forbiddenZ} in dimension {complexDimension}, "
-                 f"with {nrOfPoints} BQP points,"
-                 f" gamma checked {gammaMax}, k checked {kMax}")
-    m.setParam("OutputFlag", 0)
-    m.setParam(GRB.Param.FeasibilityTol, 1e-9)
-    m.setParam(GRB.Param.BarConvTol, 1e-12)
-    m.setParam(GRB.Param.BarQCPConvTol, 1e-12)
-    m.setParam(GRB.Param.MIPGap, 1e-12)
-    m.setParam(GRB.Param.IntFeasTol, 1e-9)
-    m.setParam(GRB.Param.PSDTol, 1e-12)
-    m.setParam(GRB.Param.OptimalityTol, 1e-9)
-    # m.setParam(GRB.Param.DisplayInterval, 10)
-    diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="diskpoly weights")
-    m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum() * diskPolyWeights.sum() >= 0, "SDP contraint")
-    m.addConstr(gp.quicksum(forbiddenInnerproductVals[gammaIdx, kIdx] * diskPolyWeights[gammaIdx, kIdx]
-                            for gammaIdx in range(gammaMax) for kIdx in range(kMax)) == 0,
-                f"Forbidden Innerproduct Constraint")
+            forbiddenInnerproductVals[gamma] = diskPolysByGamma[gamma].calcAtRTheta(forbiddenRadius, forbiddenAngle)
 
-    for pointSetIdx in range(nrOfPointSets):
+        env = gp.Env(empty=True)
+        env.setParam("OutputFlag", 0)
 
-        curNrOfSets = setSizeList[pointSetIdx]
-        curCharMatrix = charMatricesList[pointSetIdx]
-        curDPVT = diskPolyValueTensorList[pointSetIdx]
-        curNrOfPoints = nrOfPointsList[pointSetIdx]
+        print("A) before env:", rss())
+        env = gp.Env(empty=True)
+        env.start()
+        print("B) after env :", rss())
+        m = gp.Model(env=env)
+        print("C) after model:", rss())
+        # env.start()
+        # m = gp.Model(f"BQP model for forbidden innerproduct {forbiddenZ} in dimension {complexDimension}, "
+        #              f"with {nrOfPoints} BQP points,"
+        #              f" gamma checked {gammaMax}, k checked {kMax}", env=env)
+        m.setParam("OutputFlag", 0)
+        m.setParam(GRB.Param.FeasibilityTol, 1e-9)
+        m.setParam(GRB.Param.BarConvTol, 1e-12)
+        m.setParam(GRB.Param.BarQCPConvTol, 1e-12)
+        m.setParam(GRB.Param.MIPGap, 1e-12)
+        m.setParam(GRB.Param.IntFeasTol, 1e-9)
+        m.setParam(GRB.Param.PSDTol, 1e-12)
+        m.setParam(GRB.Param.OptimalityTol, 1e-9)
+        # m.setParam(GRB.Param.DisplayInterval, 10)
+        diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="diskpoly weights")
+        m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum() * diskPolyWeights.sum() >= 0, "SDP contraint")
+        m.addConstr(gp.quicksum(forbiddenInnerproductVals[gammaIdx, kIdx] * diskPolyWeights[gammaIdx, kIdx]
+                                for gammaIdx in range(gammaMax) for kIdx in range(kMax)) == 0,
+                    f"Forbidden Innerproduct Constraint")
 
-        setWeights = m.addVars(curNrOfSets, vtype=GRB.CONTINUOUS, lb=0, name=f"set weights pointset {pointSetIdx}")
+        for pointSetIdx in range(nrOfPointSets):
 
-        m.addConstr(setWeights.sum() == 1, name=f"convex description of sets pointset {pointSetIdx}")
+            curNrOfSets = setSizeList[pointSetIdx]
 
-        for mainPointIdx in range(curNrOfPoints):
-            for secondPointIdx in range(mainPointIdx+1):
-                charVector = curCharMatrix[mainPointIdx]*curCharMatrix[secondPointIdx]
+            curDPVT = diskPolyValueTensorList[pointSetIdx]
+            curNrOfPoints = nrOfPointsList[pointSetIdx]
+            curCharMatrix = charMatrixDict[curNrOfPoints]
 
-                m.addConstr(gp.quicksum(curDPVT[gammaIdx, kIdx, mainPointIdx, secondPointIdx] *
-                                        diskPolyWeights[gammaIdx, kIdx]
-                                        for gammaIdx in range(gammaMax) for kIdx in range(kMax))
-                            ==
-                            gp.quicksum(setWeights[setIdx]*charVector[setIdx] for setIdx in range(curNrOfSets)),
-                            f"BPQ  Constraint vectors {mainPointIdx}, {secondPointIdx}, pointset {pointSetIdx}")
-    m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
-    lbFeasibleBool = False
-    powerIdx = (complexDimension - 1)
-    while not lbFeasibleBool:
-        lbConstr = m.addConstr(diskPolyWeights.sum() >= (1 / 2) ** powerIdx,
-                                "Lower bound for obj due to double cap to fix weird behaviour")
-        m.update()
-        m.optimize()
-        if m.Status == GRB.INFEASIBLE:
-            m.remove(lbConstr)
-            powerIdx += 1
-        else:
-            lbFeasibleBool = True
-    diskSum = 0
-    diskWeightsArray = np.zeros((gammaMax, kMax))
-    for gammaIdx in range(gammaMax):
-        for kIdx in range(kMax):
-            diskSum += diskPolyWeights[gammaIdx,kIdx].x
-            diskWeightsArray[gammaIdx,kIdx] = diskPolyWeights[gammaIdx,kIdx].x
-    setSizeList = []
-    setTotal = 0
-    AddedPoints = 1
-    for pointset in listOfPointSets:
-        curSize = len(pointset)
-        setSizeList.append(curSize)
-        setTotal += curSize
-        AddedPoints += curSize-2
-    adjustedDWA = diskWeightsArray/diskSum
-    return adjustedDWA, diskSum, diskWeightsArray
+            setWeights = m.addVars(curNrOfSets, vtype=GRB.CONTINUOUS, lb=0, name=f"set weights pointset {pointSetIdx}")
+
+            m.addConstr(setWeights.sum() == 1, name=f"convex description of sets pointset {pointSetIdx}")
+
+            for mainPointIdx in range(curNrOfPoints):
+                for secondPointIdx in range(mainPointIdx+1):
+                    charVector = curCharMatrix[mainPointIdx]*curCharMatrix[secondPointIdx]
+
+                    m.addConstr(gp.quicksum(curDPVT[gammaIdx, kIdx, mainPointIdx, secondPointIdx] *
+                                            diskPolyWeights[gammaIdx, kIdx]
+                                            for gammaIdx in range(gammaMax) for kIdx in range(kMax))
+                                ==
+                                gp.quicksum(setWeights[setIdx]*charVector[setIdx] for setIdx in range(curNrOfSets)),
+                                f"BPQ  Constraint vectors {mainPointIdx}, {secondPointIdx}, pointset {pointSetIdx}")
+        m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
+        lbFeasibleBool = False
+        powerIdx = (complexDimension - 1)
+        while not lbFeasibleBool:
+            lbConstr = m.addConstr(diskPolyWeights.sum() >= (1 / 2) ** powerIdx,
+                                    "Lower bound for obj due to double cap to fix weird behaviour")
+            m.update()
+            m.optimize()
+            if m.Status == GRB.INFEASIBLE:
+                m.remove(lbConstr)
+                powerIdx += 1
+            else:
+                lbFeasibleBool = True
+        diskSum = 0
+        diskWeightsArray = np.zeros((gammaMax, kMax))
+        for gammaIdx in range(gammaMax):
+            for kIdx in range(kMax):
+                diskSum += diskPolyWeights[gammaIdx,kIdx].X
+                diskWeightsArray[gammaIdx,kIdx] = diskPolyWeights[gammaIdx,kIdx].X
+        setSizeList = []
+        setTotal = 0
+        AddedPoints = 1
+        for pointset in listOfPointSets:
+            curSize = len(pointset)
+            setSizeList.append(curSize)
+            setTotal += curSize
+            AddedPoints += curSize-2
+        adjustedDWA = diskWeightsArray/diskSum
+        if len(setSizeList) > 2:
+            if min(setSizeList) == max(setSizeList):
+                x=1
+        print("D) after build:", rss())
+
+        print("F) after delete:", rss())
+        return adjustedDWA, diskSum, diskWeightsArray
+    finally:
+        try:
+            m.dispose()
+        except Exception:
+            pass
+        try:
+            env.dispose()
+        except Exception:
+            pass
+        print("E) after dispose:", rss())
+        del diskPolysByGamma, listOfPointSets, setWeights, lbConstr, forbiddenInnerproductVals, (
+            diskPolyWeights), diskPolyValueTensorList, diskPolyValueTensor, curDPVT
+
+
+def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, kMax, listOfPointSets=None,
+                     nrOfPoints=2, nrOfPointSets=1):
+    # print("A) before env:", rss())
+    alpha = complexDimension - 2
+    gammaMax = int(gammaMax + 1)
+    kMax = int(kMax + 1)
+    forbiddenZ = polar2z(forbiddenRadius, forbiddenAngle)
+
+    # ---- build inputs (try to keep them small / see §3) ----
+    if listOfPointSets is None:
+        listOfPointSets = [
+            SphereBasics.createRandomPointsComplex(complexDimension, nrOfPoints, baseZ=forbiddenZ)[0]
+            for _ in range(nrOfPointSets)
+        ]
+    else:
+        nrOfPointSets = len(listOfPointSets)
+
+    diskPolysByGamma = [Disk(alpha, g, kMax-1) for g in range(gammaMax)]
+
+    # ---- Gurobi in short-lived env ----
+    env = gp.Env(empty=True)
+    env.setParam("OutputFlag", 0)
+    env.start()
+
+    try:
+        m = gp.Model(env=env)
+        m.setParam("OutputFlag", 0)
+        m.setParam(GRB.Param.FeasibilityTol, 1e-9)
+        m.setParam(GRB.Param.BarConvTol, 1e-12)
+        m.setParam(GRB.Param.BarQCPConvTol, 1e-12)
+        m.setParam(GRB.Param.MIPGap, 1e-12)
+        m.setParam(GRB.Param.IntFeasTol, 1e-9)
+        m.setParam(GRB.Param.PSDTol, 1e-12)
+        m.setParam(GRB.Param.OptimalityTol, 1e-9)
+        # keep tolerances sane; ultra-tight tolerances balloon workspace usage
+        # m.setParam(GRB.Param.OptimalityTol, 1e-9)  # only set what you truly need
+
+        diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.CONTINUOUS, lb=0, name="w")
+
+        # Forbidden-IP constraint
+        forbiddenInner = np.zeros((gammaMax, kMax))
+        for g in range(gammaMax):
+            forbiddenInner[g] = diskPolysByGamma[g].calcAtRTheta(forbiddenRadius, forbiddenAngle)
+        m.addConstr(gp.quicksum(forbiddenInner[g, k]*diskPolyWeights[g, k]
+                                for g in range(gammaMax) for k in range(kMax)) == 0)
+
+        # “SDP” constraint you coded (quadratic)
+        m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum()*diskPolyWeights.sum() >= 0)
+
+        # Build per–point-set pieces
+        for ps_idx in range(nrOfPointSets):
+            pts = listOfPointSets[ps_idx]
+            n = pts.shape[0]
+
+            # Characteristic matrix — consider sparse (see §3)
+            charM = characteristicMatrix(n)                  # shape (n, nrSets)
+            nrSets = charM.shape[1]
+            setW = m.addVars(nrSets, vtype=GRB.CONTINUOUS, lb=0, name=f"s_{ps_idx}")
+            m.addConstr(setW.sum() == 1)
+
+            # IPM and disk poly values (avoid 4-D tensor; see §3)
+            ipm = pts @ pts.conj().T
+            r, th = z2polar(ipm)
+
+            # For each pair, avoid creating a full charVector array if it’s sparse:
+            for i in range(n):
+                for j in range(i+1):
+                    # left: sum_{g,k} DP[g,k,i,j] * w[g,k]
+                    # compute DP row-on-demand, no 4-D tensor:
+                    lin = gp.LinExpr()
+                    for g in range(gammaMax):
+                        vals = diskPolysByGamma[g].calcAtRTheta(r[i, j], th[i, j])  # shape (kMax,)
+                        for k in range(kMax):
+                            if vals[k] != 0.0:
+                                lin.addTerms(vals[k], diskPolyWeights[g, k])
+
+                    # right: sum_{S} setW[S] * (charM[i,S] & charM[j,S])
+                    # use nonzeros only
+                    nz = np.flatnonzero(charM[i] * charM[j])
+                    m.addConstr(lin == gp.quicksum(setW[s] for s in nz))
+
+        m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
+
+        # Lower-bound loop
+        lb_ok = False
+        p = complexDimension - 1
+        while not lb_ok:
+            lb = m.addConstr(diskPolyWeights.sum() >= (0.5)**p)
+            m.update()
+            m.optimize()
+            if m.Status == GRB.INFEASIBLE:
+                m.remove(lb)
+                p += 1
+            else:
+                lb_ok = True
+
+        diskSum = sum(diskPolyWeights[g, k].X for g in range(gammaMax) for k in range(kMax))
+        diskWeightsArray = np.array([[diskPolyWeights[g, k].X for k in range(kMax)]
+                                     for g in range(gammaMax)])
+        adjustedDWA = diskWeightsArray / diskSum
+        # print("b) return:", rss())
+        return adjustedDWA, diskSum, diskWeightsArray
+
+    finally:
+        # Ensure native memory is released
+        try:
+            m.dispose()
+        except Exception:
+            pass
+        env.dispose()
+        # Drop big Python refs promptly
+        del diskPolysByGamma, listOfPointSets
+        # print("C) end:", rss())
 
 
 def c_k(n: int, k: int) -> float:
@@ -314,15 +466,23 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             succesRand = False
             baseObj = 0
             randObj = 0
-            baseSol = baseFlattenedStartingGuess
-            randSol = flattenedStartingGuess
+            baseSol = startingPointset
+            randSol = startingLocations
             # objv2 = improvedBQPNLP.make_objective(facetIneqs[facetIdx], shapeStartingGuess, startingPolynomial)
             # print(objective(flattenedStartingGuess)-objv2(flattenedStartingGuess)-betas[facetIdx])
             # t0 = time.perf_counter()
             # randompoints as startingpoints
             try:
-                res = improvedBQPNLP.solve_problem(flattenedStartingGuess, shapeStartingGuess, startingPolynomial,
-                                                       facetIneqs, facetIdx)
+                res = minimizationUnconstrained.run_from_flattened_start(
+                    flattenedStartingGuess, shapeStartingGuess, startingPolynomial, facetIneqs[facetIdx],
+                    unconstrained_mode="normalize",  # or "stereo"
+                    unconstrained_method="L-BFGS-B",  # or "trust-constr"
+                    workers_trust_constr=10,  # if you later set >1, keep BLAS threads = 1
+                    finite_diff_rel_step=1e-6,
+                    gtol=1e-6, xtol=1e-12, maxiter=2000, verbose=0
+                )
+                # res = improvedBQPNLP.solve_problem(flattenedStartingGuess, shapeStartingGuess, startingPolynomial,
+                #                                        facetIneqs, facetIdx)
                 # res = scipy.optimize.minimize(
                 #     objective, flattenedStartingGuess,
                 #     method='trust-constr',
@@ -330,27 +490,44 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                 #     tol=1e-8,
                 #     options={"maxiter":500}
                 # )
-            except:
+            except Exception as e:
+                print(e)
                 succesRand = False
             else:
                 relativeObjective = (betas[facetIdx]+res.fun) / relativeSizeV1  # / relativeSizes[facetIdx]
-                if relativeObjective < bestFacet and res.constr_violation < 1e-8:
-                    randSol = res.x.reshape(shapeStartingGuess)
+                # print(relativeObjective)
+                if relativeObjective < bestFacet: # and res.constr_violation < 1e-8:
+                    randSol = minimizationUnconstrained.Z_from_unconstrained_normalize(res.x,n=dim,m=6)
                     randObj = relativeObjective
                     succesRand = True
                 else:
                     succesRand = False
             # t1 = time.perf_counter()
-            # resImpr = improvedBQPNLP.solve_problem(flattenedStartingGuess, shapeStartingGuess, startingPolynomial,
-            #                                           facetIneqs, facetIdx)
+            #
+            # resImpr = minimizationUnconstrained.run_from_flattened_start(
+            #     flattenedStartingGuess, shapeStartingGuess, startingPolynomial, facetIneqs[facetIdx],
+            #     unconstrained_mode="normalize",       # or "stereo"
+            #     unconstrained_method="L-BFGS-B",      # or "trust-constr"
+            #     workers_trust_constr=10,               # if you later set >1, keep BLAS threads = 1
+            #     finite_diff_rel_step=1e-6,
+            #     gtol=1e-6, xtol=1e-12, maxiter=1000, verbose=0
+            # )
             # t2 = time.perf_counter()
-            # print(f"Old: {t1-t0} \n New:{t2-t1} \n Objectives: {res.fun} vs {resImpr.fun+betas[facetIdx]}")
+            # print(f"Old: {t1-t0} \n New:{t2-t1} \n Objectives: {res.fun+betas[facetIdx]} vs {resImpr.fun+betas[facetIdx]}")
             # if 1.3*(t1-t0)<t2-t1:
             #     x=1
             # input points as startingpoints
             try:
-                res = improvedBQPNLP.solve_problem(baseFlattenedStartingGuess, shapeStartingGuess, startingPolynomial,
-                                                       facetIneqs, facetIdx)
+                res = minimizationUnconstrained.run_from_flattened_start(
+                    baseFlattenedStartingGuess, shapeStartingGuess, startingPolynomial, facetIneqs[facetIdx],
+                    unconstrained_mode="normalize",  # or "stereo"
+                    unconstrained_method="L-BFGS-B",  # or "trust-constr"
+                    workers_trust_constr=10,  # if you later set >1, keep BLAS threads = 1
+                    finite_diff_rel_step=1e-6,
+                    gtol=1e-6, xtol=1e-12, maxiter=2000, verbose=0
+                )
+                # res = improvedBQPNLP.solve_problem(baseFlattenedStartingGuess, shapeStartingGuess, startingPolynomial,
+                #                                        facetIneqs, facetIdx)
                 # res = scipy.optimize.minimize(
                 #     objective, baseFlattenedStartingGuess,
                 #     method='trust-constr',
@@ -362,8 +539,10 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                 succesBase = False
             else:
                 relativeObjective = (res.fun+betas[facetIdx]) / relativeSizeV1 # / relativeSizes[facetIdx]
-                if relativeObjective < bestFacet and res.constr_violation < 1e-8:
-                    baseSol = res.x.reshape(shapeStartingGuess)
+                # print(f"suc{res.x},obj{relativeObjective}")
+                if relativeObjective < bestFacet: # and res.constr_violation < 1e-8:
+                    # baseSol = res.x.reshape(shapeStartingGuess)
+                    baseSol = minimizationUnconstrained.Z_from_unconstrained_normalize(res.x,n=dim,m=6)
                     baseObj = relativeObjective
                     succesBase = True
                 else:
@@ -373,15 +552,16 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             resObj = baseObj
             resSol = baseSol
             succesRes = succesBase
+
             if succesRand:
                 if randObj < baseObj:
                     resObj = randObj
                     resSol = randSol
                     succesRes = succesRand
-
+            # print(f"suc{succesRes},obj{resObj}")
             # Update best sol
             if succesRes:
-                print(resObj)
+                print(f"found {resObj} at {facetNr}")
                 lastImprovement = 0
                 bestFacet = resObj
                 sol = resSol
@@ -394,7 +574,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                     break
 
         if bestFacet < 0:
-            return True, (sol[:dim]+1j*sol[dim:]).T, (facetIdx+1) % nrOfFacets
+            return True, sol.T, (facetIdx+1) % nrOfFacets
         else:
             return False, startingGuess.T, (facetIdx+1) % nrOfFacets
 
@@ -431,7 +611,7 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
     pointSet1[1, 1] = np.sqrt(1 - forbiddenRad ** 2)
 
     # Run once to get a baseline
-    coefsThetav0, bestObjVal, unscaledcoefsThetav0 = finalBQPModel(forbiddenRad,
+    coefsThetav0, bestObjVal, unscaledcoefsThetav0 = finalBQPModelv2(forbiddenRad,
                                                                             forbiddenTheta, dim, maxGamma, maxDeg,
                                                                             listOfPointSets=[pointSet1])
     # Disk poly from baseline
@@ -698,7 +878,7 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
                                                        [inputPointSets[combIdx][2:] for combIdx in comb]))
         # Run model with new BQP sets
         (coefsCurTheta, curObjVal,
-         unscaledCoefsCurTheta) = finalBQPModel(forbiddenRad, forbiddenTheta, dim,
+         unscaledCoefsCurTheta) = finalBQPModelv2(forbiddenRad, forbiddenTheta, dim,
                                                 maxGamma, maxDeg,
                                                 listOfPointSets=pointSetsForModel)
         # If the set is full and we want to improve with NLP, then improve the pointset and run it again to verify
@@ -708,8 +888,9 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
                 print(f"Before face optimization obj {curObjVal}")
                 (foundBool, ineqPointset,
                  facetStart) = facetInequalityBQPGammaless(dim, listOfPointSets[iterationNr + 1],
-                                                                                  unscaledCoefsCurTheta,
-                                                                                  startingFacet=facetStart)
+                                                           unscaledCoefsCurTheta,
+                                                           startingFacet=facetStart, stopEarly=True)
+
                 if foundBool:
                     inputPointSets = [ineqPointset] + fullPointSets
                     if setLinks == 1:
@@ -721,7 +902,7 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
                         for comb in combinations(range(len(inputPointSets)), setLinks):
                             pointSetsForModel.append(np.concat([inputPointSets[combIdx] for combIdx in comb]))
                     (coefsFacetTheta, facetObjVal,
-                     unscaledCoefsFacetTheta) = finalBQPModel(forbiddenRad, forbiddenTheta,
+                     unscaledCoefsFacetTheta) = finalBQPModelv2(forbiddenRad, forbiddenTheta,
                                                                 dim, maxGamma, maxDeg,
                                                                 listOfPointSets=pointSetsForModel)
 
@@ -930,23 +1111,50 @@ def runTests(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, 
         del testResult, testResultDict
     return
 
+def runTestsv2(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
+    testSaveLocation = f"TestResults_{testType}_" + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
+
+    with open(testSaveLocation, "w") as f:
+        f.write('{\n')  # open JSON object
+        for testNr in range(testAmount):
+            testResult = finalBQPMethod(
+                testComplexDimension,
+                forbiddenRad=forbiddenRadius,
+                forbiddenTheta=forbiddenAngle,
+                **argsTest
+            )
+            if testNr:
+                f.write(',\n')
+            f.write(f'  "TestNr{testNr}": ')
+            json.dump(testResult, f, default=complex_to_json_safe)  # write just the value
+            f.flush()  # keep buffers small
+            del testResult
+        f.write('\n}\n')  # close JSON object
+
 
 def quickJumpNavigator():
     return "ok"
 
 
+def runModelFromFile(filename,adjustedKmax, adjustGammaMax):
+    return
+
+
 if __name__ == '__main__':
+    # gc.disable()
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",3:"uniformCoordinateWise"}
-    testDim = 3
+    testDim = 6
     testRad = 0
     testTheta = 0
     testMatrix = characteristicMatrix(6)
     # modelBQP(0, 0, 3, 15, 15, nrOfPoints=14)
     # for dimension in range(testDim, 20):
     #     makeModelv2((dimension - 3.0) / 2.0, (dimension - 3.0) / 2.0, 0)
-    nrOfTests = 1
+    nrOfTests = 10
     bqpType = allTestTypes[2]
-    testArgs = {bqpType:True, "maxDeg":200,"sizeOfBQPSet":6,"setAmount":5, "setLinks":2, "improvementWithFacets":True}
+    testArgs = {bqpType:True, "maxDeg":500,"sizeOfBQPSet":6,"setAmount":5, "setLinks":2, "improvementWithFacets":True}
+    for setSize in range(2,testArgs["setLinks"]*testArgs["sizeOfBQPSet"]+1):
+        charMatrixDict[setSize] = characteristicMatrix(setSize)
     runTests(testDim,testRad,testTheta,nrOfTests,testArgs,bqpType)
 
 

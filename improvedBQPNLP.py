@@ -2,6 +2,8 @@ import os
 import numpy as np
 from scipy import sparse
 from scipy.optimize import minimize, NonlinearConstraint, Bounds
+from functools import partial
+import psutil
 
 # --- (optional) set BLAS threads to physical cores before importing numpy elsewhere ---
 # os.environ["OPENBLAS_NUM_THREADS"] = "8"
@@ -69,6 +71,36 @@ def make_objective(W, shapeStartingGuess, startingPolynomial):
         # return np.dot(W.ravel(), P.ravel()).real
     return fun
 
+def objective_fun(S, shapeStartingGuess, startingPolynomial, W_flat):
+    P = polyVals_fast(S, shapeStartingGuess, startingPolynomial)
+    return -np.dot(W_flat, P.ravel()).real
+
+
+def c_fun(S, d_tot, m):
+    X = S.reshape(d_tot, m)
+    return np.sum(X*X, axis=0) - 1.0
+
+def c_jac(S, d_tot, m):
+    X = S.reshape(d_tot, m)
+    n = d_tot * m
+    rows = np.tile(np.arange(m), d_tot)        # k = i*m + j  → j = k % m
+    cols = np.arange(n)
+    data = 2.0 * X.ravel(order='C')
+    return sparse.coo_matrix((data, (rows, cols)), shape=(m, n)).tocsr()
+
+def c_hess(S, v, d_tot, m):
+    diag = 2.0 * np.tile(np.asarray(v), d_tot)
+    return sparse.diags(diag, format='csr')
+
+def make_norm_constraints(shapeStartingGuess):
+    d_tot, m = shapeStartingGuess
+    return NonlinearConstraint(
+        fun=partial(c_fun, d_tot=d_tot, m=m),
+        lb=0.0, ub=0.0,
+        jac=partial(c_jac, d_tot=d_tot, m=m),
+        hess=partial(c_hess, d_tot=d_tot, m=m)
+    )
+
 # ---------- Unit-norm-per-column constraints: exact sparse Jacobian & Hessian ----------
 # def make_norm_constraints(shapeStartingGuess):
 #     d_tot, m = shapeStartingGuess
@@ -92,29 +124,29 @@ def make_objective(W, shapeStartingGuess, startingPolynomial):
 #
 #     return NonlinearConstraint(c_fun, 0.0, 0.0, jac=c_jac, hess=c_hess)
 
-def make_norm_constraints(shapeStartingGuess):
-    d_tot, m = shapeStartingGuess
-    n = d_tot * m
-
-    # map flat var index k -> column j = k % m  (C-order flatten)
-    rows = np.tile(np.arange(m), d_tot)   # <-- FIX: tile, not repeat
-    cols = np.arange(n)
-
-    def c_fun(S):
-        X = S.reshape(d_tot, m)           # C-order
-        return np.sum(X*X, axis=0) - 1.0  # (m,)
-
-    def c_jac(S):
-        X = S.reshape(d_tot, m)           # C-order
-        data = 2.0 * X.ravel(order='C')
-        return sparse.coo_matrix((data, (rows, cols)), shape=(m, n)).tocsr()
-
-    def c_hess(S, v):
-        # for k=i*m + j, column is j = k % m -> diag = 2*v[j]
-        diag = 2.0 * np.tile(np.asarray(v), d_tot)
-        return sparse.diags(diag, format='csr')
-
-    return NonlinearConstraint(c_fun, 0.0, 0.0, jac=c_jac, hess=c_hess)
+# def make_norm_constraints(shapeStartingGuess):
+#     d_tot, m = shapeStartingGuess
+#     n = d_tot * m
+#
+#     # map flat var index k -> column j = k % m  (C-order flatten)
+#     rows = np.tile(np.arange(m), d_tot)   # <-- FIX: tile, not repeat
+#     cols = np.arange(n)
+#
+#     def c_fun(S):
+#         X = S.reshape(d_tot, m)           # C-order
+#         return np.sum(X*X, axis=0) - 1.0  # (m,)
+#
+#     def c_jac(S):
+#         X = S.reshape(d_tot, m)           # C-order
+#         data = 2.0 * X.ravel(order='C')
+#         return sparse.coo_matrix((data, (rows, cols)), shape=(m, n)).tocsr()
+#
+#     def c_hess(S, v):
+#         # for k=i*m + j, column is j = k % m -> diag = 2*v[j]
+#         diag = 2.0 * np.tile(np.asarray(v), d_tot)
+#         return sparse.diags(diag, format='csr')
+#
+#     return NonlinearConstraint(c_fun, 0.0, 0.0, jac=c_jac, hess=c_hess)
 
 # ---------- Example wiring ----------
 # Given from your context:
@@ -125,39 +157,59 @@ def make_norm_constraints(shapeStartingGuess):
 
 def solve_problem(x0, shapeStartingGuess, startingPolynomial, facetIneqs, facetIdx,
                   lb_x=None, ub_x=None):
-    W = facetIneqs[facetIdx]
-    fun = make_objective(W, shapeStartingGuess, startingPolynomial)
+    # W = facetIneqs[facetIdx]
+    # fun = make_objective(W, shapeStartingGuess, startingPolynomial)
+    # nlc = make_norm_constraints(shapeStartingGuess)
+    #
+    # bounds = None
+    # if lb_x is not None or ub_x is not None:
+    #     # Provide Bounds if you have simple variable-wise limits (cheap for trust-constr)
+    #     lb = -np.inf if lb_x is None else lb_x
+    #     ub =  np.inf if ub_x is None else ub_x
+    #     bounds = Bounds(lb, ub)
+    #
+    # # Finite-diff for the objective gradient (fast & stable enough for your linear interpolant).
+    # # If you later supply an analytic/AD jac, drop 'jac' and pass 'jac=your_jac'.
+    # # options = dict(
+    # #     gtol=1e-6,
+    # #     xtol=1e-8,
+    # #     barrier_tol=1e-8,
+    # #     initial_tr_radius=1.0,
+    # #     maxiter=500,
+    # #     finite_diff_rel_step=1e-6,  # tune if needed; keep comfortably smaller than ~1/(resolution-1)
+    # #     verbose=0
+    # # )
+    # options= dict(
+    #     # agents=4,  # number of parallel workers
+    #     # workers=psutil.cpu_count(logical=False),
+    #     workers=6,
+    #     finite_diff_rel_step=1e-6,  # keep as you tuned it
+    #     gtol=1e-6, xtol=1e-12, barrier_tol=1e-8
+    # )
+    #
+    # res = minimize(fun, x0,
+    #                method="trust-constr",
+    #                jac='2-point',
+    #                constraints=[nlc],
+    #                bounds=bounds,
+    #
+    #                options=options)
+    W_flat = np.asarray(facetIneqs[facetIdx]).ravel()
     nlc = make_norm_constraints(shapeStartingGuess)
 
-    bounds = None
-    if lb_x is not None or ub_x is not None:
-        # Provide Bounds if you have simple variable-wise limits (cheap for trust-constr)
-        lb = -np.inf if lb_x is None else lb_x
-        ub =  np.inf if ub_x is None else ub_x
-        bounds = Bounds(lb, ub)
-
-    # Finite-diff for the objective gradient (fast & stable enough for your linear interpolant).
-    # If you later supply an analytic/AD jac, drop 'jac' and pass 'jac=your_jac'.
-    # options = dict(
-    #     gtol=1e-6,
-    #     xtol=1e-8,
-    #     barrier_tol=1e-8,
-    #     initial_tr_radius=1.0,
-    #     maxiter=500,
-    #     finite_diff_rel_step=1e-6,  # tune if needed; keep comfortably smaller than ~1/(resolution-1)
-    #     verbose=0
-    # )
-    options= dict(
-        agents=4,  # number of parallel workers
-        finite_diff_rel_step=1e-6,  # keep as you tuned it
-        gtol=1e-6, xtol=1e-12, barrier_tol=1e-8
+    res = minimize(
+        objective_fun, x0,
+        args=(shapeStartingGuess, startingPolynomial, W_flat),
+        method="trust-constr",
+        jac='2-point',  # so SciPy actually does FD
+        constraints=[nlc],
+        # bounds=bounds,  # if you have any
+        options=dict(
+            finite_diff_rel_step=1e-6,
+            gtol=1e-8, xtol=1e-8, barrier_tol=1e-8,
+            verbose=3,
+            # workers=10,
+            maxiter=500
+        ) # ← threads; no pickling of closures
     )
-
-    res = minimize(fun, x0,
-                   method="trust-constr",
-                   jac='2-point',
-                   constraints=[nlc],
-                   bounds=bounds,
-                   options=options)
-
     return res

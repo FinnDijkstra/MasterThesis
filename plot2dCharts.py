@@ -2,7 +2,7 @@ import math
 
 from numpy import dtype
 
-import main
+import OldFunctions
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
@@ -12,9 +12,10 @@ from scipy.integrate import quad
 from matplotlib.colors import LightSource
 import matplotlib.tri as mtri
 from matplotlib import cm
+import OrthonormalPolyClasses
 labelDict = {"RadAng":["Radius","Angle", "Result (log of -thetapart)"], "RadGamma":["Radius","Gamma", "Result"],
              "JacobiSol":["Innerproduct","Height", "Result"]}
-testType = "JacobiSol"
+testType = "DiskCheck"
 dimension = 4
 
 minGamma = 5
@@ -467,8 +468,9 @@ if __name__ == "__main__":
     denseDots = (0,(1,1))
     dotDash = (0,(3,3,1,3))
     dashes = (0,(3,3))
-    thetaVFunc = np.vectorize(main.thetaBasedOnThetapart)
+    # thetaVFunc = np.vectorize(OldFunctions.thetaBasedOnThetapart)
     interVFunc = np.vectorize(interpolateDegree)
+
     if testType == "RadGamma":
         xMin = -1
         xMax = 1
@@ -477,7 +479,7 @@ if __name__ == "__main__":
 
         X = np.linspace(xMin, xMax, xSteps)
 
-        vfunc = np.vectorize(main.normedJacobiValue)
+        vfunc = np.vectorize(OldFunctions.normedJacobiValue)
     else:
         xMin = -1
         xMax = 1
@@ -487,7 +489,17 @@ if __name__ == "__main__":
 
         X = np.linspace(xMin, xMax, xSteps)
 
-        vfunc = np.vectorize(main.normedJacobiValue)
+        vfunc = np.vectorize(OldFunctions.normedJacobiValue)
+
+    if testType == "DiskCheck":
+        radArray = np.linspace(0,1,1001,endpoint=True)
+        diskToCheck = OrthonormalPolyClasses.Disk(3-2,0,200)
+        diskVals = diskToCheck(radArray, 0,200)[0]
+        fig, ax = plt.subplots()
+        ax.plot(radArray,diskVals)
+        plt.show()
+        x=1
+
     if "Rad" in testType:
         for gamma in range(minGamma, maxGamma):
 
@@ -538,7 +550,7 @@ if __name__ == "__main__":
         radialBool = False
         cosineBool = True
         definitionPoints = 250
-        vfunc = np.vectorize(main.normedJacobiValue, otypes=[float])
+        vfunc = np.vectorize(OldFunctions.normedJacobiValue, otypes=[float])
         if radialBool:
 
             thetaSpace = np.linspace(0, math.pi, num=definitionPoints)
@@ -548,14 +560,14 @@ if __name__ == "__main__":
             jacobiObj = 1 / dimension * vfunc(degree=0, alpha=(dimension - 3) / 2, beta=(dimension - 3) / 2, location=innerProductTheta)
 
             # for angle in innerProductTheta:
-            #     print(main.normedJacobiValue(degree=2,alpha=(dimension-3)/2,beta=(dimension-3)/2,
+            #     print(OldFunctions.normedJacobiValue(degree=2,alpha=(dimension-3)/2,beta=(dimension-3)/2,
             #                                              location=angle))
             jacobiComp = (dimension - 1) / dimension * vfunc(location=innerProductTheta, degree=2, alpha=(dimension - 3) / 2,
                                                              beta=(dimension - 3) / 2
                                                              )
             jacobiSol = jacobiObj + jacobiComp
-            circMeasure = 2 * (math.pi ** ((dimension - 1) / 2) / main.gammaFunction((dimension - 1) / 2))
-            sphereMeasure = 2 * (math.pi ** ((dimension) / 2) / main.gammaFunction((dimension) / 2))
+            circMeasure = 2 * (math.pi ** ((dimension - 1) / 2) / OldFunctions.gammaFunction((dimension - 1) / 2))
+            sphereMeasure = 2 * (math.pi ** ((dimension) / 2) / OldFunctions.gammaFunction((dimension) / 2))
             sphereMeasure2 = 0
             # if dimension == 2:
             #     weightMeasure = np.ones_like(innerProductTheta)
@@ -649,14 +661,14 @@ if __name__ == "__main__":
             jacobiObj = 1 / dimension * vfunc(degree=0, alpha=(dimension - 3) / 2, beta=(dimension - 3) / 2, location=r)
 
             # for angle in innerProductTheta:
-            #     print(main.normedJacobiValue(degree=2,alpha=(dimension-3)/2,beta=(dimension-3)/2,
+            #     print(OldFunctions.normedJacobiValue(degree=2,alpha=(dimension-3)/2,beta=(dimension-3)/2,
             #                                              location=angle))
             jacobiComp = (dimension - 1) / dimension * vfunc(location=r, degree=2, alpha=(dimension - 3) / 2,
                                                              beta=(dimension - 3) / 2
                                                              )
             jacobiSol = jacobiObj + jacobiComp
-            circMeasure = 2 * (math.pi ** ((dimension - 1) / 2) / main.gammaFunction((dimension - 1) / 2))
-            sphereMeasure = 2 * (math.pi ** ((dimension) / 2) / main.gammaFunction((dimension) / 2))
+            circMeasure = 2 * (math.pi ** ((dimension - 1) / 2) / OldFunctions.gammaFunction((dimension - 1) / 2))
+            sphereMeasure = 2 * (math.pi ** ((dimension) / 2) / OldFunctions.gammaFunction((dimension) / 2))
             sphereMeasure2 = 0
             if dimension == 2:
                 weightMeasure = np.ones_like(r)
