@@ -6,8 +6,9 @@ from gurobipy import GRB
 import math
 import scipy
 import numpy as np
-import fractions
-import random
+from pathlib import Path
+# import fractions
+# import random
 import scipy.stats as st
 from scipy.special import hyp2f1, loggamma, binom
 # import sympy as sym
@@ -15,17 +16,18 @@ import pandas as pd
 import json
 import os
 import datetime
-from multiprocessing import Pool, cpu_count
+# from multiprocessing import Pool, cpu_count
 from itertools import combinations
-import improvedBQPNLP
-from pympler import asizeof
+# import improvedBQPNLP
+# from pympler import asizeof
 import psutil
-import gc
-from matplotlib import pyplot as plt
+import Scoreboard
+# import gc
+# from matplotlib import pyplot as plt
 
 import SphereBasics
-from line_profiler import LineProfiler
-from numpy.polynomial import Polynomial
+# from line_profiler import LineProfiler
+# from numpy.polynomial import Polynomial
 
 import minimizationUnconstrained
 from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialIntegrator, \
@@ -33,6 +35,9 @@ from SphereBasics import complexWeightPolyCreator, complexDoubleCap, radialInteg
 
 from OrthonormalPolyClasses import Jacobi, Disk, DiskCombi, FastRadialEstimator, FastDiskCombiEstimator
 
+
+facetScoreDF = pd.DataFrame()
+facetFileLoc = "facetScores.csv"
 nrOfVars = 10
 nrOfTests = 200
 dimension = 4
@@ -328,7 +333,8 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
                                      for g in range(gammaMax)])
         adjustedDWA = diskWeightsArray / diskSum
         objBound = m.objBound
-        print(f"primal dual difference: {objBound-diskSum}")
+        if objBound-diskSum < 0:
+            print(f"bound obj error with primal dual difference: {objBound-diskSum}")
         # print("b) return:", rss())
         return adjustedDWA, max(objBound,diskSum), diskWeightsArray
 
@@ -430,7 +436,8 @@ def halfOpenRectsToCoefs(rIntervals, thetaIntervals, kMax, gammaMax, complexDim,
 
 def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                                 startingFacet=0, maxDryRun=-1, stopEarly=True, useRadialEstimator=True):
-
+    scoreCategories = ["Times Tested", "Bad Scores", "Times Won (delivered)", "Times Won (random)",
+                       "Goals (delivered)", "Goals (random)", "Scores (delivered)", "Scores (random)", "Scores (tie)"]
     pointSetSize = startingPointset.shape[0]
     significantCoefs = np.argwhere(startingCoefficients > 1e-4)
     idxOfLastSignificantCoef = np.max(significantCoefs,axis=0)
@@ -477,12 +484,15 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
     sol = startingGuess
     lastImprovement = 0
     facetIdx = startingFacet + 1
+    bestFacetIdx = "0"
     scoreboard = {"delivered":0,"random":0,"tie":0, "bad":0}
     goalboard = {"delivered":0,"random":0}
     facetNr = 0
     goals = 0
     if validIneqs:
         nrOfFacets = betas.shape[0]
+        facetIndices = np.arange(nrOfFacets)
+        np.random.shuffle(facetIndices)
         if maxDryRun == -1:
             maxDryRun = nrOfFacets
         # relativeSizes = np.max(np.max(np.abs(facetIneqs),axis=1), axis=1)
@@ -490,7 +500,10 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             startingLocations = createRandomPointsComplex(dim,6, includeInner=False)[0]
             startingGuess = np.concat([startingLocations.T.real, startingLocations.T.imag])
             flattenedStartingGuess = startingGuess.ravel()
-            facetIdx = -nrOfFacets + facetNr + startingFacet
+            # facetIdx = -nrOfFacets + facetNr + startingFacet
+            facetIdx = facetIndices[facetNr]
+            idxStr = str(facetIdx)
+            facetScoreDF.at[scoreCategories[0], idxStr] += 1
             objective = lambda S: betas[facetIdx] - np.sum(
                 np.multiply(facetIneqs[facetIdx],polyVals(S)))
             constraint = lambda S: np.sum(np.square(S.reshape(shapeStartingGuess)),axis=0)-1
@@ -601,22 +614,31 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                     resType = "random"
             if baseObj > 0 and randObj > 0:
                 scoreboard["bad"] += 1
+                facetScoreDF.at[scoreCategories[1], idxStr] += 1
             elif baseObj < randObj:
                 scoreboard["delivered"] += 1
+                facetScoreDF.at[scoreCategories[6], idxStr] += 1
             elif baseObj > randObj:
                 scoreboard["random"] += 1
+                facetScoreDF.at[scoreCategories[7], idxStr] += 1
             else:
                 scoreboard["tie"] += 1
+                facetScoreDF.at[scoreCategories[8], idxStr] += 1
             # print(f"suc{succesRes},obj{resObj}")
             # Update best sol
             if succesRes:
-                print(f"found {resObj} at {facetNr}")
+                print(f"found {resObj} at {idxStr} (nr of facets tested: {facetNr})")
                 lastImprovement = 0
                 bestFacet = resObj
                 sol = resSol
                 bestType = resType
                 goalboard[bestType] += 1
+                if bestType == "delivered":
+                    facetScoreDF.at[scoreCategories[4], idxStr] += 1
+                else:
+                    facetScoreDF.at[scoreCategories[5], idxStr] += 1
                 goals += 1
+                bestFacetIdx = idxStr
             else:
                 lastImprovement += 1
 
@@ -624,11 +646,19 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             if bestFacet < 0 and stopEarly:
                 if bestFacet < currentCutOff or lastImprovement >= maxDryRun:
                     break
-
-        if bestFacet < 0:
-            return True, sol.T, (facetIdx+1) % nrOfFacets
+    Scoreboard.show_dashboard(scoreboard,goalboard,facetNr+validIneqs,goals)
+    print(f"Final winner: {bestType}")
+    # facetScoreDF.to_csv(facetFileLoc)
+    if bestFacet < 0:
+        if bestType == "delivered":
+            facetScoreDF.at[scoreCategories[2],bestFacetIdx] += 1
         else:
-            return False, startingGuess.T, (facetIdx+1) % nrOfFacets
+            facetScoreDF.at[scoreCategories[3], bestFacetIdx] += 1
+        facetScoreDF.to_csv(facetFileLoc)
+        return True, sol.T, (facetIdx+1) % nrOfFacets
+    else:
+        facetScoreDF.to_csv(facetFileLoc)
+        return False, startingGuess.T, (facetIdx+1) % nrOfFacets
 
 
 
@@ -1228,13 +1258,24 @@ def readPointsetAndRunModelWith(fileLocation,testKey, overridingSetting=None):
     yeah = "yeah"
 
 
+def readOrInitFacetScores():
+    path = Path(facetFileLoc)
+    global facetScoreDF
+    if not path.exists():
+        facetIndices = np.arange(428)
+        scoreCategories = ["Times Tested","Bad Scores","Times Won (delivered)","Times Won (random)",
+                           "Goals (delivered)","Goals (random)","Scores (delivered)","Scores (random)", "Scores (tie)"]
+        vals = np.zeros((len(scoreCategories), 428))
+        facetScoreDF = pd.DataFrame(vals, columns=facetIndices, index=scoreCategories)
+        facetScoreDF.to_csv(facetFileLoc)
+    else:
+        facetScoreDF = pd.read_csv(path, header=0, index_col=0)
+
 
 def quickJumpNavigator():
     return "ok"
 
 
-def runModelFromFile(filename,adjustedKmax, adjustGammaMax):
-    return
 
 
 if __name__ == '__main__':
@@ -1249,11 +1290,12 @@ if __name__ == '__main__':
     # modelBQP(0, 0, 3, 15, 15, nrOfPoints=14)
     # for dimension in range(testDim, 20):
     #     makeModelv2((dimension - 3.0) / 2.0, (dimension - 3.0) / 2.0, 0)
-    nrOfTests = 10
+    nrOfTests = 1
     bqpType = allTestTypes[2]
-    testArgs = {bqpType:True, "maxDeg":1500,"sizeOfBQPSet":6,"setAmount":5, "setLinks":5, "improvementWithFacets":True}
+    testArgs = {bqpType:True, "maxDeg":1500,"sizeOfBQPSet":6,"setAmount":5, "setLinks":2, "improvementWithFacets":True}
     # for setSize in range(2,testArgs["setLinks"]*testArgs["sizeOfBQPSet"]+1):
     #     charMatrixDict[setSize] = characteristicMatrix(setSize)
+    readOrInitFacetScores()
     runTests(testDim,testRad,testTheta,nrOfTests,testArgs,bqpType)
 
 
