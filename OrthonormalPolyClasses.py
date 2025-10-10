@@ -6,6 +6,57 @@ from math import comb
 # from threadpoolctl import threadpool_info
 # import plot2dCharts
 
+class Jacobiv2:
+
+
+    def __init__(self, alpha, beta, kMax):
+        self.alpha = alpha
+        self.beta = beta
+        self.kMax = kMax
+        kArray = np.arange(1,max(kMax,2))
+        twoNAB = 2*kArray + alpha + beta
+        self.Aks = ((twoNAB + 1) * (twoNAB + 2)* twoNAB)
+        self.Bks = ((self.alpha ** 2 - self.beta ** 2) * (twoNAB + 1))
+        self.Cks = (2 * kArray * (kArray + self.beta) * (twoNAB + 2))
+        self.Dks = (2 * (kArray + self.alpha + self.beta + 1) * twoNAB * (kArray + self.alpha + 1))
+
+
+
+    def __call__(self, x, desiredDeg):
+        return self.calcAtX(x)[desiredDeg]/comb(self.alpha+desiredDeg,desiredDeg)
+
+    def calcAtX(self, x):
+        x = np.asarray(x)
+        out_shape = (max(self.kMax, 1) + 1,) + x.shape
+        dtype = np.result_type(x, np.float64)
+
+        alpha, beta = self.alpha, self.beta
+
+        # Guard: Q_1 needs alpha != -1
+        if alpha == -1:
+            raise ValueError("alpha = -1 makes Q_1 undefined (P_1(1)=alpha+1=0).")
+
+        vals = np.empty(out_shape, dtype=dtype)
+        vals[0] = 1.0
+        # Q1 = (((α+β)/2+1) x + (α-β)/2) / (α+1)
+        q1_x = ((alpha + beta) + 2.0)
+        q1_c = (alpha - beta)
+        q1_d = ((alpha + 1.0)*2.0)
+        vals[1] = (q1_x * x + q1_c)/q1_d
+
+        if self.kMax <= 1:
+            return vals
+
+        for degree in range(2, self.kMax + 1):
+            i = degree - 2  # n = 1,2,... maps to indices 0,1,...
+            vals[degree] = ((self.Aks[i] * x + self.Bks[i]) * vals[degree - 1]
+                            - self.Cks[i] * vals[degree - 2])/self.Dks[i]
+        return vals
+
+    def calcNormalizedAtX(self, x):
+        return self.calcAtX(x)
+
+
 
 class Jacobi:
 
@@ -55,7 +106,8 @@ class Disk:
         self.alpha = alpha
         self.gamma = gamma
         self.kMax = kMax
-        self.Jacobi = Jacobi(alpha, gamma, kMax)
+        self.Jacobi = Jacobiv2(alpha, gamma, kMax)
+        self.JacobiV2 = Jacobi(alpha,gamma,kMax)
 
 
     def __call__(self, r, theta, desiredDeg):

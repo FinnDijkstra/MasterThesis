@@ -10,6 +10,7 @@ import numpy as np
 from scipy import sparse
 from scipy.optimize import minimize, NonlinearConstraint, Bounds
 from functools import partial
+from scipy.special import logsumexp
 
 # ---------------------------
 # Utilities: parametrizations
@@ -305,6 +306,25 @@ def objective_unconstrained_normalize(U_flat: np.ndarray,
     return -np.dot(W_flat, P.ravel()).real
 
 
+def objective_facets_softmin(params_flat, n, m, estimator_A, W_stack, b_vec, tau):
+    """
+    Minimize soft-min_tau_j [ b_j - <W_j, A(V,V)> ] over V.
+    params_flat: flattened U in R^{2n x m} (normalize parametrization).
+    """
+    U = params_flat.reshape(2*n, m)
+    X = normalize_to_X(U)
+    G_re, G_im = gram_re_im_from_X(X)
+    P = poly_from_gram_no_drift(G_re, G_im, estimator_A)  # (m, m)
+
+    # All facets at once: g_j = b_j - <W_j, P>
+    # einsum: j,i,i -> j for Frobenius inner products
+    s = b_vec - np.einsum('Kij,ij->K', W_stack, P, optimize=True)
+
+    # soft-min (≈ min_j s_j when tau is small)
+    f = -tau * logsumexp(-s / tau)
+    return f
+
+
 # ------------------------------------------------
 # Exact unit-norm constraints (for constrained run)
 # ------------------------------------------------
@@ -343,6 +363,31 @@ def make_norm_constraints(shapeStartingGuess: tuple) -> NonlinearConstraint:
 # Solver wrappers (pick & run)
 # ------------------------------
 
+def solve_facets_softmin(flat_start, shapeStartingGuess, estimator_A, W_stack, b_vec,
+                         tau=None, maxiter=1000, ftol=1e-9):
+    d_tot, m = shapeStartingGuess
+    n = d_tot // 2
+
+    # default tau: small fraction of current spread (robust)
+    if tau is None:
+        # quick pilot eval to scale tau
+        U0 = flat_start.reshape(2*n, m)
+        X0 = normalize_to_X(U0)
+        G_re0, G_im0 = gram_re_im_from_X(X0)
+        P0 = poly_from_gram_no_drift(G_re0, G_im0, estimator_A)
+        s0 = b_vec - np.einsum('Kij,ij->K', W_stack, P0, optimize=True)
+        rng = np.percentile(s0, 90) - np.percentile(s0, 10)
+        tau = max(1e-4, 0.05 * (rng if np.isfinite(rng) and rng > 0 else 1.0))
+
+    res = minimize(
+        objective_facets_softmin,
+        flat_start,
+        args=(n, m, estimator_A, W_stack, b_vec, float(tau)),
+        method="L-BFGS-B",
+        jac=None,
+        options=dict(maxiter=maxiter, ftol=ftol, maxls=50)
+    )
+    return res, tau
 
 def solve_unconstrained(params0_flat: np.ndarray,
                         n: int,
@@ -422,6 +467,10 @@ def solve_unconstrained(params0_flat: np.ndarray,
 
     else:
         raise ValueError("method must be 'L-BFGS-B' or 'trust-constr'")
+
+
+
+
 
 
 # ------------------------------------------
