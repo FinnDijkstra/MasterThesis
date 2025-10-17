@@ -1,6 +1,8 @@
 # from typing import final
 import re
 
+from sympy.stats import Gamma
+
 import OrthonormalPolyClasses
 import UnconstrainedPolyDiffOptimizer
 import time
@@ -10,12 +12,13 @@ import math
 import scipy
 import numpy as np
 from pathlib import Path
-import matplotlib.pyplot  as plt
+import matplotlib.pyplot as plt
 # import fractions
 # import random
 import scipy.stats as st
 from scipy.stats import unitary_group
 from scipy.special import hyp2f1, loggamma, binom
+from scipy import special
 # import sympy as sym
 import pandas as pd
 import json
@@ -520,34 +523,194 @@ def finalBQPModelv3(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
         del diskPolysByGamma, listOfPointSets
         # print("C) end:", rss())
 
-def bigBounds(radiusArray, comDim, kArray, gammaArray):
-    radiusArray = np.asarray(radiusArray)
-    radiusShape = radiusArray.shape
-    flatRad = radiusArray.ravel()
-    epsArray = np.zeros_like(flatRad)
-    kArray = np.asarray(kArray)
-    gammaArray = np.asarray(gammaArray)
-    onesMask = (flatRad == 1)
-    epsArray[onesMask] = 1
-    boundMask = (flatRad < 1)
-    boundRadii = flatRad[boundMask]
-    boundSqrRem = (1-np.square(boundRadii))
-    radiusDenom = np.power(boundSqrRem,comDim/2-1)
-    strongRadiusDenom = np.power(4*np.square(boundRadii)*boundSqrRem,1/4) * radiusDenom
-    lg = (loggamma(comDim - 1 + kArray) + loggamma(comDim - 1 + kArray + gammaArray) - 2*loggamma(comDim - 1)
-          - loggamma(kArray + 1) - loggamma(kArray + gammaArray + 1))/2
-    poch_ratio = np.exp(lg)
-    convBoundFac = 12/np.power(2*kArray + gammaArray + comDim - 1, 1/4)
-    startBoundFac = np.power(((kArray+1)*(kArray+gammaArray+comDim-1))/((kArray+comDim-1)*(kArray+gammaArray+1)),1/4)
-    convBoundRadless = convBoundFac/(poch_ratio)  # * radiusDenom * strongRadiusDenom)
-    convBound = np.outer(convBoundRadless, strongRadiusDenom)
-    startBoundRadless = startBoundFac/(poch_ratio) # * radiusDenom)
-    startBound = np.outer(startBoundRadless, radiusDenom)
-    bestBound = np.minimum(convBound, startBound)
-    superBound = np.min(bestBound, axis=0)
-    epsArray[boundMask] = superBound
-    epsMatrix = epsArray.reshape(radiusShape)
-    return epsMatrix
+
+def paramSetFromBorder(kBorder, gammaBorder):
+    arraySize = np.sum(gammaBorder) + int(gammaBorder.size)
+    kArray = np.zeros(arraySize,dtype=int)
+    gammaArray = np.zeros(arraySize,dtype=int)
+    insertIdx = 0
+    for idx in range(kBorder.size):
+        gammaBorderVal = gammaBorder[idx]
+        sizeOfSubArray = gammaBorderVal + 1
+        kBorderVal = kBorder[idx]
+        gammaVals = np.arange(sizeOfSubArray)
+        kVals = kBorderVal*np.ones(sizeOfSubArray)
+        kArray[insertIdx:insertIdx+sizeOfSubArray] = kVals
+        gammaArray[insertIdx:insertIdx+sizeOfSubArray] = gammaVals
+        insertIdx += sizeOfSubArray
+    return kArray, gammaArray
+
+
+def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gammaBorder, listOfPointSets=None,
+                     nrOfPoints=2, nrOfPointSets=1,finalRun=False):
+    # print("A) before env:", rss())
+    alpha = complexDimension - 2
+    kSet,gammaSet = paramSetFromBorder(kBorder, gammaBorder)
+    gammaMax = np.max(gammaBorder)
+    kMax = np.max(kBorder)
+    includedParamsArray = np.zeros((gammaMax+1,kMax+1),dtype=np.bool)
+    includedParamsArray[gammaSet, kSet] = True
+    forbiddenZ = polar2z(forbiddenRadius, forbiddenAngle)
+
+
+
+    # ---- build inputs (try to keep them small / see §3) ----
+    if listOfPointSets is None:
+        listOfPointSets = [
+            SphereBasics.createRandomPointsComplex(complexDimension, nrOfPoints, baseZ=forbiddenZ)[0]
+            for _ in range(nrOfPointSets)
+        ]
+    else:
+        nrOfPointSets = len(listOfPointSets)
+    boundsForbidden = superBound(forbiddenZ, complexDimension, kBorder, gammaBorder)
+    listOfBoundArrays = []
+    for curPointSet in listOfPointSets:
+        listOfBoundArrays.append(superBound(curPointSet, complexDimension, kBorder, gammaBorder))
+    kMaxByGamma = np.max(np.multiply(includedParamsArray,np.arange(kMax+1)),axis=1)
+    # kMaxByGamma = np.zeros(gammaMax+1)
+    # for curGamma in range(gammaMax+1):
+    #     kMaxByGamma[curGamma] = np.max(includedParamsArray,axis=0)
+    #     kMaxByGamma[curGamma] = np.max(kSet[np.where(gammaSet == curGamma)])
+    diskPolysByGamma = [Disk(alpha, g, kMaxByGamma[g]+1) for g in range(gammaMax+1)]
+
+    # ---- Gurobi in short-lived env ----
+    env = gp.Env(empty=True)
+    env.setParam("OutputFlag", 0)
+    env.start()
+
+    try:
+        m = gp.Model(env=env)
+        m.setParam("OutputFlag", 1)
+        m.setParam(GRB.Param.FeasibilityTol, 1e-8)
+        m.setParam(GRB.Param.BarConvTol, 1e-9)
+        m.setParam(GRB.Param.BarQCPConvTol, 1e-9)
+        # m.setParam(GRB.Param.MIPGap, 1e-9)
+        m.setParam(GRB.Param.IntFeasTol, 1e-9)
+        # m.setParam(GRB.Param.PSDTol, 1e-9)
+        m.setParam(GRB.Param.OptimalityTol, 1e-8)
+        # m.setParam(GRB.Param.DualReductions, 0)
+        m.setParam(GRB.Param.Crossover, 2)
+        m.setParam(GRB.Param.NonConvex, 2)
+        m.setParam(GRB.Param.Method, 2)
+        m.setParam(GRB.Param.BarHomogeneous, 1)
+        # m.setParam(GRB.Param.ScaleFlag,0)
+        if finalRun:
+            m.setParam(GRB.Param.NumericFocus, 3)
+        # m.setParam(GRB.Param.Presolve, 0)
+
+
+        z1Var = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="z1")
+        z2Var = m.addVar(vtype=GRB.CONTINUOUS, name="z2")
+        z3Var = m.addVar(vtype=GRB.CONTINUOUS, ub=0, name="z3")
+
+
+        forbiddenMuPlus = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuPlus")
+        forbiddenMuMin = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuMin")
+        muPlusDictOfVars = {}
+        muMinDictOfVars = {}
+        for psIdx in range(len(listOfPointSets)):
+            curPS = listOfPointSets[psIdx]
+            muPlusDictOfVars[psIdx] = m.addMVar(curPS.shape, vtype=GRB.CONTINUOUS, lb=0, name=f"MuPlusForSet{psIdx}")
+            muMinDictOfVars[psIdx] = m.addMVar(curPS.shape, vtype=GRB.CONTINUOUS, lb=0, name=f"MuMinForSet{psIdx}")
+
+        # diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.SEMICONT, lb=0,ub=1, name="w")
+
+        # Forbidden-IP constraint
+        forbiddenInner = np.zeros((gammaMax, kMax))
+        for g in range(gammaMax):
+            forbiddenInner[g] = diskPolysByGamma[g].calcAtRTheta(forbiddenRadius, forbiddenAngle)
+        # m.addConstr(gp.quicksum(forbiddenInner[g, k]*diskPolyWeights[g, k]
+        #                         for g in range(gammaMax) for k in range(kMax)) == 0)
+
+        # “SDP” constraint you coded (quadratic)
+        m.addConstr(-z1Var*z3Var - z2Var*z2Var/4 >= 0, name="SDP constraint")
+
+        # k=gamma=0 constraint MY BRAINNN IS ROTTTING
+        m.addConstr(z2Var+z3Var+(forbiddenMuPlus))
+        # Build per–point-set pieces
+        largestSet = 0
+        nInit = listOfPointSets[0].shape[0]
+        charM = characteristicMatrix(nInit)
+        nrSets = charM.shape[1]
+        for ps_idx in range(nrOfPointSets):
+            pts = listOfPointSets[ps_idx]
+            n = pts.shape[0]
+            if charM.shape[0] != n:
+                # Characteristic matrix — consider sparse (see §3)
+                charM = characteristicMatrix(n)                  # shape (n, nrSets)
+                nrSets = charM.shape[1]
+            setW = m.addVars(nrSets, vtype=GRB.SEMICONT, lb=0,ub=1, name=f"s_{ps_idx}")
+            # m.addConstr(setW.sum() <= 1)
+            if nrSets > largestSet:
+                largestSet = nrSets
+            m.addConstr(setW[0]==0)
+            # IPM and disk poly values (avoid 4-D tensor; see §3)
+            ipm = pts @ pts.conj().T
+            r, th = z2polar(ipm)
+            np.round(r, 14, out=r)
+            np.round(th, 14, out=th)
+            # For each pair, avoid creating a full charVector array if it’s sparse:
+            for i in range(n):
+                for j in range(i+1):
+                    # left: sum_{g,k} DP[g,k,i,j] * w[g,k]
+                    # compute DP row-on-demand, no 4-D tensor:
+                    lin = gp.LinExpr()
+                    for g in range(gammaMax):
+                        vals = diskPolysByGamma[g].calcAtRTheta(r[i, j], th[i, j])  # shape (kMax,)
+                        for k in range(kMax):
+                            if vals[k] != 0.0:
+                                lin.addTerms(vals[k], diskPolyWeights[g, k])
+
+                    # right: sum_{S} setW[S] * (charM[i,S] & charM[j,S])
+                    # use nonzeros only
+                    nz = np.flatnonzero(charM[i] * charM[j])
+                    setWeightConstr.append(m.addConstr(lin == gp.quicksum(setW[s] for s in nz)))
+            setWeightVars.append(setW)
+        # m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
+        m.setObjective(diskPolyWeights[0,0],GRB.MAXIMIZE)
+
+        # Lower-bound loop
+        lb_ok = False
+        p = complexDimension - 1
+        while not lb_ok:
+            # lb = m.addConstr(diskPolyWeights.sum() >= (0.5)**p)
+            lb = m.addConstr(diskPolyWeights[0,0] >= (0.5) ** p)
+            m.update()
+            m.optimize()
+            print(m.objBound)
+            if m.Status != GRB.OPTIMAL and m.Status != GRB.SUBOPTIMAL:
+                print(m.objBound)
+                m.remove(lb)
+                p += 1
+            else:
+                lb_ok = True
+        print(m.objBound)
+        objVal = m.objVal
+        for setW in setWeightVars:
+            print(sum(setWCur.X for setWCur in setW.values()))
+        diskSum = sum(diskPolyWeights[g, k].X for g in range(gammaMax) for k in range(kMax))
+        diskWeightsArray = np.array([[diskPolyWeights[g, k].X for k in range(kMax)]
+                                     for g in range(gammaMax)])
+        adjustedDWA = diskWeightsArray * objVal
+        objBound = m.objBound
+        if objBound-diskSum < 0 or objBound > 1.1 * diskSum:
+            print(f"bound obj error with primal dual difference: {objBound-diskSum}")
+        # print("b) return:", rss())
+        return adjustedDWA, max(objBound,diskSum), diskWeightsArray
+
+    finally:
+        # Ensure native memory is released
+        try:
+            m.dispose()
+        except Exception:
+            pass
+        env.dispose()
+        # Drop big Python refs promptly
+        del diskPolysByGamma, listOfPointSets
+        # print("C) end:", rss())
+
+
+
 
 def c_k(n: int, k: int) -> float:
     """
@@ -1626,6 +1789,476 @@ def borderMaker(lambdaFunc, bigN, verificationFunc=None):
     return kBorder, gammaBorder
 
 
+def bigBounds(radiusArray, comDim, kArrayShaped, gammaArrayShaped,perParamaterBool=False):
+    radiusArray = np.atleast_1d(radiusArray)
+    radiusShape = radiusArray.shape
+    flatRad = radiusArray.ravel()
+    epsArray = np.zeros_like(flatRad)
+    kArrayShaped = np.atleast_1d(kArrayShaped)
+    gammaArrayShaped = np.atleast_1d(gammaArrayShaped)
+    paramShape = kArrayShaped.shape
+    kArray = kArrayShaped.ravel()
+    gammaArray = gammaArrayShaped.ravel()
+    onesMask = (flatRad == 1)
+    zerosMask = (flatRad == 0)
+    # Handle ones
+    epsArray[onesMask] = 1
+    # Handle non extrema
+    boundMask = (1 > flatRad > 0)
+    boundRadii = flatRad[boundMask]
+    boundSqrRem = (1-np.square(boundRadii))
+    radiusDenom = np.power(boundSqrRem,1-comDim/2)
+    strongRadiusDenom = np.power(4*np.square(boundRadii)*boundSqrRem,-1/4) * radiusDenom
+    lg = (loggamma(comDim - 1 + kArray) + loggamma(comDim - 1 + kArray + gammaArray) - 2*loggamma(comDim - 1)
+          - loggamma(kArray + 1) - loggamma(kArray + gammaArray + 1))/2
+    poch_ratio = np.exp(lg)
+    convBoundFac = 12/np.power(2*kArray + gammaArray + comDim - 1, 1/4)
+    startBoundFac = np.power(((kArray+1)*(kArray+gammaArray+comDim-1))/((kArray+comDim-1)*(kArray+gammaArray+1)),1/4)
+
+    # convBoundRadless = convBoundFac/(poch_ratio)  # * radiusDenom * strongRadiusDenom)
+    # convBound = np.outer(convBoundRadless, strongRadiusDenom)
+    # startBoundRadless = startBoundFac/(poch_ratio) # * radiusDenom)
+    # startBound = np.outer(startBoundRadless, radiusDenom)
+
+    convBoundRadless = convBoundFac / (poch_ratio)  # * radiusDenom * strongRadiusDenom)
+    convBound = np.clip(np.outer(strongRadiusDenom, convBoundRadless),0,1)
+    startBoundRadless = startBoundFac / (poch_ratio)  # * radiusDenom)
+    startBound = np.clip(np.outer(radiusDenom, startBoundRadless),0,1)
+    bestBound = np.minimum(convBound, startBound)
+    superBound = np.max(bestBound, axis=1)
+    epsArray[boundMask] = superBound
+    # Handle zeros
+    zeroGammas = (gammaArray == 0)
+    boundZeroArray = zeroGammas/poch_ratio
+    boundZero = np.max(boundZeroArray)
+    epsArray[zerosMask] = boundZero
+    epsMatrix = epsArray.reshape(radiusShape)
+    if perParamaterBool:
+        flatRadSize = flatRad.shape
+        paramaterSize = kArray.shape
+        epsOutput = np.ones(flatRadSize + paramaterSize)
+        epsOutput[zerosMask] = boundZeroArray[None, :]
+        epsOutput[boundMask] = bestBound
+        epsOutputRes = np.reshape(epsOutput, radiusShape + paramShape)
+        return epsOutputRes
+        flatRadSize = flatRad.shape
+        paramaterSize = kArray.shape
+        epsOutput = np.ones(flatRadSize + paramaterSize)
+        epsOutput[zerosMask] = boundZeroArray[None,:]
+        epsOutput[boundMask] = bestBound
+        epsOutputRes = np.reshape(epsOutput,radiusShape+paramaterSize)
+        return epsOutputRes
+    else:
+        return epsMatrix
+
+
+def stupidBigN(k_arr, r_arr):
+
+    k = np.asarray(k_arr, dtype=int).ravel()
+    r = np.asarray(r_arr, dtype=float).ravel()
+    n, m = r.size, k.size
+
+    # Harmonic numbers H_k
+    j = np.arange(1, k.max()+1, dtype=float)
+    H = np.zeros_like(k, dtype=float)
+    for idx, kk in enumerate(k):
+        H[idx] = np.sum(1.0/j[:kk]) if kk > 0 else 0.0
+
+    # Broadcast masks
+    kMesh,radMesh = np.meshgrid(k,r)
+    hMesh,radMesh = np.meshgrid(H,r)
+    # R = r[:, None]          # (n,1)
+    # K = k[None, :]          # (1,m)
+    # Hk = H[None, :]         # (1,m)
+
+    # Existence mask
+    exist = (kMesh >= 1) & (radMesh >= np.exp(-hMesh)) & (radMesh < 1.0)
+
+    # Safe upper bound gamma'
+    gamma_up = np.zeros((n, m), dtype=float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        gamma_up[exist] = (radMesh[exist] * (2*kMesh[exist] + 1.0) - 1.0) / (2.0 * (1.0 - radMesh[exist]))
+    gamma_up = np.clip(gamma_up, 0.0, np.inf)
+
+    ceil_upper = np.where(exist, np.ceil(gamma_up).astype(int), 0)
+
+    return ceil_upper
+
+
+def stupidBound(radiusArray,comDim,kArray,gammaArray,perParamaterBool=False):
+    radiusArray = np.atleast_1d(radiusArray)
+    radiusShape = radiusArray.shape
+    flatRad = radiusArray.ravel()
+    epsArray = np.zeros_like(flatRad)
+    kArray = np.atleast_1d(kArray)
+    gammaArray = np.atleast_1d(gammaArray)
+
+    onesMask = (flatRad == 1)
+    zerosMask = (flatRad == 0)
+    # Handle ones
+    epsArray[onesMask] = 1
+    # Handle zeros
+    zeroGammas = (gammaArray == 0)
+    lg = (-loggamma(comDim - 1 + kArray) + loggamma(kArray + 1)
+          + loggamma(comDim - 1))
+    valAt0 = np.exp(lg)
+    boundZeroArray = zeroGammas * valAt0
+    boundZero = np.max(boundZeroArray)
+    epsArray[zerosMask] = boundZero
+    # Handle non extrema
+    boundMask = (1 > flatRad > 0)
+    boundRadii = flatRad[boundMask]
+    gammaMesh, boundRadMesh = np.meshgrid(gammaArray,boundRadii)
+    kMesh, boundRadMesh = np.meshgrid(kArray,boundRadii)
+    # find M such that Jacobi<= (k+M choose k)/(k+n-2 choose k)
+    bigNgamma = stupidBigN(kArray,boundRadii)
+    comDimMesh = (comDim-2)*np.ones_like(bigNgamma)
+    gammaEvalMesh = np.maximum(gammaMesh,bigNgamma)
+    gammaPochMesh = np.maximum(gammaEvalMesh, comDimMesh)
+
+    # calc r^{M}* max(P_k^{n-2,M}(-1), P_k^{n-2,M}(1))
+    lg = (-loggamma(comDim - 1 + kMesh) + loggamma(kMesh + gammaPochMesh + 1) + loggamma(comDim - 1)
+          - loggamma(gammaPochMesh + 1))
+    poch_ratio = np.exp(lg)
+    radPowered = np.power(boundRadMesh,gammaEvalMesh)
+    foundBounds = poch_ratio*radPowered
+    epsArray[boundMask] = np.max(foundBounds,axis=0)
+
+    # boundSqrRem = (1 - np.square(boundRadii))
+    # radiusDenom = np.power(boundSqrRem, comDim / 2 - 1)
+    epsMatrix = epsArray.reshape(radiusShape)
+    if perParamaterBool:
+        flatRadSize = flatRad.shape
+        paramaterSize = kArray.shape
+        epsOutput = np.ones(flatRadSize + paramaterSize)
+        epsOutput[zerosMask] = boundZeroArray[None,:]
+        epsOutput[boundMask] = foundBounds
+        epsOutputRes = np.reshape(epsOutput, radiusShape + paramaterSize)
+        return epsOutputRes
+    else:
+        return epsMatrix
+
+
+def kOneBound(radiusArray,comDim,kArray,gammaArray, perParamaterBool=False):
+    radiusArray = np.atleast_1d(radiusArray)
+    radiusShape = radiusArray.shape
+    flatRad = radiusArray.ravel()
+    epsArray = np.zeros_like(flatRad)
+    kArray = np.atleast_1d(kArray)
+    gammaArray = np.atleast_1d(gammaArray)
+    ParamMask = (kArray==1)
+    IgnoreMask = (kArray!=1)
+
+    onesMask = (flatRad == 1)
+    zerosMask = (flatRad == 0)
+    # Handle ones
+    epsArray[onesMask] = 1
+    # Handle zeros
+    zeroGammas = (gammaArray == 0)
+    lg = (-loggamma(comDim - 1 + kArray) + loggamma(kArray + 1)
+          + loggamma(comDim - 1))
+    valAt0 = np.exp(lg)
+    boundZeroArray = zeroGammas * valAt0
+    boundZero = np.max(boundZeroArray)
+    epsArray[zerosMask] = boundZero
+    # Handle non extrema
+    boundMask = (1 > flatRad > 0)
+    boundRadii = flatRad[boundMask]
+    squaredRadii = np.square(boundRadii)
+    gammaMesh, boundRadMesh = np.meshgrid(gammaArray, boundRadii)
+    kMesh, boundSquaredRadMesh = np.meshgrid(kArray, squaredRadii)
+    # find M such that Jacobi<= (k+M choose k)/(k+n-2 choose k)
+    bigNgamma = -(1/np.log(boundSquaredRadMesh)+1+((comDim-1)*boundSquaredRadMesh)/(1-boundSquaredRadMesh))
+    # comDimMesh = (comDim - 2) * np.ones_like(bigNgamma)
+    gammaEvalMesh = np.maximum(gammaMesh, bigNgamma)
+    # gammaPochMesh = np.maximum(gammaEvalMesh, comDimMesh)
+
+    # calc r^{M}* ( ((M+1)/(n-1)-1)) (1-r^2) +1)
+    jacobiBound = boundSquaredRadMesh + (1-boundSquaredRadMesh)*((gammaEvalMesh+1)/(comDim-1))
+    radPowered = np.power(boundRadMesh, gammaEvalMesh)
+    foundBounds = np.ones_like(boundRadMesh)
+    foundBounds[:,ParamMask] = (jacobiBound * radPowered)[:,ParamMask]
+    epsArray[boundMask] = np.max(foundBounds, axis=0)
+
+    # boundSqrRem = (1 - np.square(boundRadii))
+    # radiusDenom = np.power(boundSqrRem, comDim / 2 - 1)
+    epsMatrix = epsArray.reshape(radiusShape)
+    if perParamaterBool:
+        flatRadSize = flatRad.shape
+        paramaterSize = kArray.shape
+        epsOutput = np.ones(flatRadSize + paramaterSize)
+        epsOutput[zerosMask] = boundZeroArray[None, :]
+        epsOutput[boundMask] = foundBounds
+        epsOutputRes = np.reshape(epsOutput, radiusShape + paramaterSize)
+        return epsOutputRes
+    else:
+        return epsMatrix
+
+
+def kTwoBound(radiusArray,comDim,kArray,gammaArray, perParamaterBool=False):
+    radiusArray = np.atleast_1d(radiusArray)
+    radiusShape = radiusArray.shape
+    flatRad = radiusArray.ravel()
+    epsArray = np.zeros_like(flatRad)
+    kArray = np.atleast_1d(kArray)
+    gammaArray = np.atleast_1d(gammaArray)
+    ParamMask = (kArray==2)
+    IgnoreMask = (kArray!=2)
+
+    onesMask = (flatRad == 1)
+    zerosMask = (flatRad == 0)
+    # Handle ones
+    epsArray[onesMask] = 1
+    # Handle zeros
+    zeroGammas = (gammaArray == 0)
+    lg = (-loggamma(comDim - 1 + kArray) + loggamma(kArray + 1)
+          + loggamma(comDim - 1))
+    valAt0 = np.exp(lg)
+    boundZeroArray = zeroGammas * valAt0
+    boundZero = np.max(boundZeroArray)
+    epsArray[zerosMask] = boundZero
+    # Handle non extrema
+    boundMask = (1 > flatRad > 0)
+    boundRadii = flatRad[boundMask]
+    squaredRadii = np.square(boundRadii)
+    gammaMesh, boundRadMesh = np.meshgrid(gammaArray, boundRadii)
+    kMesh, boundSquaredRadMesh = np.meshgrid(kArray, squaredRadii)
+    # find M such that Jacobi<= (k+M choose k)/(k+n-2 choose k)
+
+    evalledDMesh = (2*comDim+1)**2 + 4/(np.square(np.log(boundRadMesh))) - (4*(comDim**2-comDim)/(1-boundSquaredRadMesh))
+    validD = (evalledDMesh>=0)
+    adjustedDMesh = evalledDMesh*validD
+    bigNgammaFalse = -((3+2/np.log(boundRadMesh)+np.sqrt(adjustedDMesh))/2)
+    bigNgamma = bigNgammaFalse*validD
+    # comDimMesh = (comDim - 2) * np.ones_like(bigNgamma)
+    gammaEvalMesh = np.maximum(gammaMesh, bigNgamma)
+    # gammaPochMesh = np.maximum(gammaEvalMesh, comDimMesh)
+
+    # calc r^{M}* ( ((M+1)/(n-1)-1)) (1-r^2) +1)
+    jacobiBound = 1 + np.square(1-boundSquaredRadMesh)*(-1+(((gammaEvalMesh+1)*(gammaEvalMesh+2))/((comDim)*(comDim-1))))
+    radPowered = np.power(boundRadMesh, gammaEvalMesh)
+    foundBounds = np.ones_like(boundRadMesh)
+    foundBounds[:,ParamMask] = (jacobiBound * radPowered)[:,ParamMask]
+    epsArray[boundMask] = np.max(foundBounds, axis=0)
+
+    # boundSqrRem = (1 - np.square(boundRadii))
+    # radiusDenom = np.power(boundSqrRem, comDim / 2 - 1)
+    epsMatrix = epsArray.reshape(radiusShape)
+    if perParamaterBool:
+        flatRadSize = flatRad.shape
+        paramaterSize = kArray.shape
+        epsOutput = np.ones(flatRadSize + paramaterSize)
+        epsOutput[zerosMask] = boundZeroArray[None, :]
+        epsOutput[boundMask] = foundBounds
+        epsOutputRes = np.reshape(epsOutput, radiusShape + paramaterSize)
+        return epsOutputRes
+    else:
+        return epsMatrix
+
+
+def superBound(radiusArray,comDim,kArrayShaped,gammaArrayShaped, perParamaterBool=False, compCustoms=False):
+    radiusArray = np.atleast_1d(radiusArray)
+    radiusShape = radiusArray.shape
+    flatRad = radiusArray.ravel()
+    epsArray = np.zeros_like(flatRad)
+    kArrayShaped = np.atleast_1d(kArrayShaped)
+    gammaArrayShaped = np.atleast_1d(gammaArrayShaped)
+    paramShape = kArrayShaped.shape
+    kArray = kArrayShaped.ravel()
+    gammaArray = gammaArrayShaped.ravel()
+    # visitedKArray = np.unique(kArray)
+
+
+    onesMask = (flatRad >= 1)
+    zerosMask = (flatRad <= 0)
+    # The trick here is (1 > flatRad > 0) iff not 1 and not 0
+    boundMask = np.equal(onesMask,zerosMask)
+    # Handle ones
+    epsArray[onesMask] = 1
+    # Handle zeros
+    zeroGammas = (gammaArray == 0)
+    lgAtZero = (-loggamma(comDim - 1 + kArray) + loggamma(kArray + 1)
+                + loggamma(comDim - 1))
+    valAt0 = np.exp(lgAtZero)
+    boundZeroArray = zeroGammas * valAt0
+    boundZero = np.max(boundZeroArray)
+    epsArray[zerosMask] = boundZero
+    # Handle non extrema
+    # boundMask = (1 > flatRad > 0)
+    # create every type of radius needed
+    boundRadii = flatRad[boundMask]
+
+    boundSqrRem = (1 - np.square(boundRadii))
+    radiusDenom = np.power(boundSqrRem, 1- comDim / 2)
+    strongRadiusDenom = np.power(4 * np.square(boundRadii) * boundSqrRem, -1 / 4) * radiusDenom
+    squaredRadii = np.square(boundRadii)
+    gammaMesh, boundRadMesh = np.meshgrid(gammaArray, boundRadii)
+    kMesh, boundSquaredRadMesh = np.meshgrid(kArray, squaredRadii)
+    if compCustoms:
+        customRadii = np.sqrt(boundRadii)
+        customSquared = boundRadii
+        gammaMesh, customBoundRadMesh = np.meshgrid(gammaArray, customRadii)
+        kMesh, customBoundSquaredRadMesh = np.meshgrid(kArray, customSquared)
+    else:
+        customRadii = boundRadii
+        customBoundRadMesh = boundRadMesh
+        customBoundSquaredRadMesh = boundSquaredRadMesh
+
+
+    # k=2
+    # find M such that Jacobi<= r^M ( (|P_2^{n-2,M}(-1)|-1)(1-r^2)^2 + 1)
+
+    evalledDMesh = (2 * comDim + 1) ** 2 + 4 / (np.square(np.log(boundRadMesh))) - (
+                4 * (comDim ** 2 - comDim) / (1 - boundSquaredRadMesh))
+    validD = (evalledDMesh >= 0)
+    adjustedDMesh = evalledDMesh * validD
+    bigNgammaFalse = -((3 + 2 / np.log(boundRadMesh) + np.sqrt(adjustedDMesh)) / 2)
+    bigNgammaKTwo = bigNgammaFalse * validD
+
+    gammaEvalMeshKTwo = np.maximum(gammaMesh, bigNgammaKTwo)
+
+
+    # calc r^{M}* ( ((M+1)/(n-1)-1)) (1-r^2) +1)
+    jacobiBoundKTwo = 1 + np.square(1 - customBoundSquaredRadMesh) * (
+                -1 + (((gammaEvalMeshKTwo + 1) * (gammaEvalMeshKTwo + 2)) / ((comDim) * (comDim - 1))))
+    radPoweredKTwo = np.power(customBoundRadMesh, gammaEvalMeshKTwo)
+    foundBoundsKTwo = np.ones_like(customBoundRadMesh)
+    ParamMaskKTwo = (kArray == 2)
+    foundBoundsKTwo[:, ParamMaskKTwo] = (jacobiBoundKTwo * radPoweredKTwo)[:, ParamMaskKTwo]
+    # epsArrayKTwo[boundMask] = np.max(foundBounds, axis=0)
+
+
+
+
+
+    # k=1
+    # find M such that Jacobi<= <= r^M ( (|P_1^{n-2,M}(-1)|-1)(1-r^2) + 1)
+    bigNgammaKOne = -(
+                1 / np.log(customBoundSquaredRadMesh) + 1 +
+                ((comDim - 1) * customBoundSquaredRadMesh) / (1 - customBoundSquaredRadMesh))
+    gammaEvalMeshKOne = np.maximum(gammaMesh, bigNgammaKOne)
+
+    # calc r^{M}* ( ((M+1)/(n-1)-1)) (1-r^2) +1)
+    jacobiBoundKOne = customBoundSquaredRadMesh + (1 - customBoundSquaredRadMesh) * ((gammaEvalMeshKOne + 1) / (comDim - 1))
+    radPoweredKOne = np.power(customBoundRadMesh, gammaEvalMeshKOne)
+    foundBoundsKOne = np.ones_like(customBoundRadMesh)
+    ParamMaskKOne = (kArray == 1)
+    foundBoundsKOne[:, ParamMaskKOne] = (jacobiBoundKOne * radPoweredKOne)[:, ParamMaskKOne]
+
+
+    # Stupid bound
+    # bound by r^{\gamma}|P_k^{n-2,\gamma}(x)| x=-1 if gamma>=n-2, x=1 if gamma<n-2
+    # Handle non extrema
+    # boundMask = (1 > flatRad > 0)
+    # boundRadii = flatRad[boundMask]
+    # gammaMesh, boundRadMesh = np.meshgrid(gammaArray, boundRadii)
+    # kMesh, boundRadMesh = np.meshgrid(kArray, boundRadii)
+    # find M such that r^{M} outgrows jacobi bound
+    bigNgammaStupid = stupidBigN(kArray, customRadii)
+    comDimMesh = (comDim - 2) * np.ones_like(bigNgammaStupid)
+    gammaEvalMeshStupid = np.maximum(gammaMesh, bigNgammaStupid)
+    gammaPochMeshStupid = np.maximum(gammaEvalMeshStupid, comDimMesh)
+
+    # calc r^{M}* max(P_k^{n-2,M}(-1), P_k^{n-2,M}(1))
+    lgStupid = (gammaEvalMeshStupid*np.log(customBoundRadMesh)-loggamma(comDim - 1 + kMesh) +
+          loggamma(kMesh + gammaPochMeshStupid + 1) + loggamma(comDim - 1)
+          - loggamma(gammaPochMeshStupid + 1))
+    # poch_ratio = np.exp(lg)
+    # radPowered = np.power(boundRadMesh, gammaEvalMesh)
+    # foundBounds = poch_ratio * radPowered
+    foundBoundsStupid = np.exp(lgStupid)
+
+
+
+    # the two bounds that prove convergence
+    lgConv = (loggamma(comDim - 1 + kArray) + loggamma(comDim - 1 + kArray + gammaArray) - 2 * loggamma(comDim - 1)
+          - loggamma(kArray + 1) - loggamma(kArray + gammaArray + 1)) / 2
+    poch_ratioConv = np.exp(lgConv)
+    convBoundFacConv = 12 / np.power(2 * kArray + gammaArray + comDim - 1, 1 / 4)
+    startBoundFacConv = np.power(
+        ((kArray + 1) * (kArray + gammaArray + comDim - 1)) / ((kArray + comDim - 1) * (kArray + gammaArray + 1)),
+        1 / 4)
+    convBoundRadlessConv = convBoundFacConv / (poch_ratioConv)  # * radiusDenom * strongRadiusDenom)
+    convBoundConv = np.outer(strongRadiusDenom, convBoundRadlessConv)
+    startBoundRadlessConv = startBoundFacConv / (poch_ratioConv)  # * radiusDenom)
+    startBoundConv = np.outer(radiusDenom, startBoundRadlessConv)
+
+    # Handle zeros
+    # zeroGammas = (gammaArray == 0)
+    # boundZeroArray = zeroGammas / poch_ratio
+
+    # boundSqrRem = (1 - np.square(boundRadii))
+    # radiusDenom = np.power(boundSqrRem, comDim / 2 - 1)
+    allBounds = np.stack([convBoundConv, startBoundConv, foundBoundsKOne,foundBoundsKTwo,foundBoundsStupid])
+    bestBound = np.min(allBounds, axis=0)
+    superBoundArray = np.max(bestBound, axis=1)
+    epsArray[boundMask] = superBoundArray
+    epsMatrix = epsArray.reshape(radiusShape)
+    if perParamaterBool:
+        flatRadSize = flatRad.shape
+        paramaterSize = kArray.shape
+        epsOutput = np.ones(flatRadSize + paramaterSize)
+        epsOutput[zerosMask] = boundZeroArray[None, :]
+        epsOutput[boundMask] = bestBound
+        epsOutputRes = np.reshape(epsOutput, radiusShape + paramShape)
+
+        # sufficientPlaces = (epsOutputRes <= 0.001)[0]
+        # has_any = sufficientPlaces.any(axis=0)
+        # # sufficientK = checkKMesh[sufficientPlaces]
+        # # sufficientGamma = checkGammaMesh[sufficientPlaces]
+        # foundK = kArrayShaped[0,has_any]  # k values that have any hit
+        # min_gamma_cols = np.where(sufficientPlaces, gammaArrayShaped, np.inf).min(axis=0)
+        # minimumGamma = min_gamma_cols[has_any]  # min γ for each found k
+        # foundGammaBorder[foundK] = minimumGamma
+        return epsOutputRes
+    else:
+        return epsMatrix
+
+
+def borderBasedOnEpsilon(eps, comDim, ipmSet):
+    radiusSet, thetaSet = z2polar(ipmSet)
+    nonZero = (radiusSet > 0+eps)
+    nonOne = (radiusSet < 1-eps)
+    interestingIdx = nonZero*nonOne
+    interestingVals = radiusSet[interestingIdx]
+    if comDim == 2:
+        mainRad = interestingVals[np.argmax(np.abs(interestingVals-0.5))]
+        maxK = np.ceil((((12/eps)**4)/(4*np.square(mainRad)*(1-np.square(mainRad)))-1)/2)
+    else:
+        # mainRad = np.max(interestingVals)
+        mainRad = np.sqrt(-(np.power(np.average(np.power(1-np.square(interestingVals),1-comDim/2)),1/(1-comDim/2))-1))
+        upperK = np.ceil(np.power(special.gamma(comDim-1)/eps, 1/(comDim-2)))/(np.sqrt(1-mainRad**2))
+        interestedK = np.arange(upperK+1)
+        interestedGamma = np.zeros_like(interestedK)
+        calcedEps = bigBounds(mainRad, comDim, interestedK,interestedGamma,perParamaterBool=True)[0]
+        sufficientK = (calcedEps <= eps)
+        maxK = np.min(np.argwhere(sufficientK))+1
+    foundKBorder = np.arange(maxK+1)
+    foundGammaBorder = np.zeros_like(foundKBorder)
+    kLeftToFind = np.ones_like(foundKBorder,dtype=np.bool)
+    kLeftToFind[-1] = False
+    # curGammaIdx = 0
+    gammaStepSize = math.ceil(100000.0/maxK)
+    checkingGamma = np.arange(gammaStepSize)
+    while np.any(kLeftToFind):
+        checkingK = foundKBorder[kLeftToFind]
+        checkKMesh,checkGammaMesh = np.meshgrid(checkingK,checkingGamma)
+        boundValMatrix = superBound(mainRad, comDim, checkKMesh, checkGammaMesh, perParamaterBool=True, compCustoms=True)[0]
+        sufficientPlaces = (boundValMatrix <= eps)
+        has_any = sufficientPlaces.any(axis=0)
+        # sufficientK = checkKMesh[sufficientPlaces]
+        # sufficientGamma = checkGammaMesh[sufficientPlaces]
+        foundK = checkingK[has_any]  # k values that have any hit
+        min_gamma_cols = np.where(sufficientPlaces, checkGammaMesh, np.inf).min(axis=0)
+        minimumGamma = min_gamma_cols[has_any]  # min γ for each found k
+        foundGammaBorder[foundK] = minimumGamma
+        kLeftToFind[foundK] = False
+
+        checkingGamma += gammaStepSize
+    return foundKBorder, foundGammaBorder
+
+
+
 def quickJumpNavigator():
     return "ok"
 
@@ -1639,19 +2272,68 @@ if __name__ == '__main__':
     #                             overridingSetting={"maxDeg":1500, "setLinks":3})
     # gc.disable()
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",3:"uniformCoordinateWise",4:"compareToLowerBound"}
-    testDim = 3
+    testDim = 4
+    # testRadArray = np.linspace(0,1,1000)# np.random.random(1) #(5,10)
+    pointSet,_,_ = SphereBasics.createRandomPointsComplex(4,6,includeInner=False)
+    ipmTestSet = pointSet @ np.conj(pointSet).T
+    # aMaxK = np.arange(11)
+    # aMaxGamma = np.arange(21)
+    radiusSet1, thetaSet1 = z2polar(ipmTestSet)
+    nonZero1 = (radiusSet1 > 0 + 0.001)
+    nonOne1 = (radiusSet1 < 1 - 0.001)
+    interestingIdx1 = nonZero1 * nonOne1
+    interestingVals1 = radiusSet1[interestingIdx1]
+    interestingThetas1 = thetaSet1[interestingIdx1]
+    interestingZs1 = ipmTestSet[interestingIdx1]
+    pointSetSize = interestingVals1.size
+
+
+
+    coefArrayAmax = np.ones((21,11))/(21*11)
+    aMaxTester = DiskCombi(testDim-2,coefArrayAmax)
+    # interestingAvals = aMaxTester.allValues(interestingVals1,
+    #                                         interestingThetas1).reshape((21*11,))[1:,:]
+    # betaMax = np.max(np.abs(interestingAvals), axis=0)
+    # epsWeights = np.square(betaMax)
+    # #
+    Aarray = aMaxTester.allValues(z2polar(ipmTestSet)[0],z2polar(ipmTestSet)[1])
+    AVals = np.sum(np.abs(Aarray), axis=(2, 3)).ravel()[1:] - 6
+    AMax = np.max(AVals)
+
+
+    testRadArray = np.random.random((6,6))
+    testThetaArray = np.zeros_like(testRadArray)
+    testZArray = polar2z(testRadArray,testThetaArray)
+    # finds a border such that concatenating that way makes the problem
+    # have an optimal value of around (1+objDiffMax)*theta (likely lower though)
+    objDiffMax = 0.01
+    testKBorder,testGammaBorder = borderBasedOnEpsilon(objDiffMax/AMax,testDim,ipmTestSet)
+
+
+    testkArray = np.arange(3)
+    testgammaArray = np.arange(500)
+
+
+    testkMesh,testgammaMesh = np.meshgrid(testkArray,testgammaArray)
+    foundBounds = superBound(radiusSet1,testDim,testKBorder,testGammaBorder,True)
+
+    concatDual(0,0,testDim,testKBorder,testGammaBorder, pointSet)
+    # kMax = 500
+    # testkArray = np.arange(kMax)
+    # testgammaArray = np.clip(np.ceil(kMax ** 2 / np.clip(testkArray, 1, np.inf) - testkArray), 0, kMax ** 2)
+    # foundBounds = superBound(testRadArray, testDim, testkArray, testgammaArray, True)
     testRad = 0
     testTheta = 0
     testMatrix = characteristicMatrix(6)
     # cutOffFunc = lambda k, gamma: (((((k+1)**(testDim-2)) * ((k+gamma+1)**(testDim-2)))**(1/2))
     #                                 * ((((k+testDim-1)*(k+gamma+1))/((k+1)*(k+gamma+testDim-1)))**(1/4)))
-    cutOffFunc = lambda k, gamma: (((k +1) ** (testDim - 2)) * ((k + gamma + 1) ** (testDim - 2))) ** (1 / 2)
-    cutOffVal = 100
-    verificationFunc = lambda k: ((cutOffVal**(2))/((k+1)**(testDim-2)))**(1/(testDim-2))-k
-    verificationFunc = lambda k: ((cutOffVal ** (2)) / ((k + 1) ** (testDim - 2))) ** (1 / (testDim - 2)) - k
-    kBorder,gammaBorder = borderMaker(cutOffFunc,cutOffVal,verificationFunc)
-    randomRadii = np.random.random(10)
-    bigBounds(randomRadii, testDim, kBorder,gammaBorder)
+    # cutOffFunc = lambda k, gamma: (((k +1) ** (testDim - 2)) * ((k + gamma + 1) ** (testDim - 2))) ** (1 / 2)
+    # cutOffVal = 100
+    # verificationFunc = lambda k: ((cutOffVal**(2))/((k+1)**(testDim-2)))**(1/(testDim-2))-k
+    # verificationFunc = lambda k: ((cutOffVal ** (2)) / ((k + 1) ** (testDim - 2))) ** (1 / (testDim - 2)) - k
+    # kBorder,gammaBorder = borderMaker(cutOffFunc,cutOffVal,verificationFunc)
+    # randomRadii = np.linspace(0,1,1000)
+    # bigBounds(randomRadii, testDim, kBorder,gammaBorder)
     # modelBQP(0, 0, 3, 15, 15, nrOfPoints=14)
     # for dimension in range(testDim, 20):
     #     makeModelv2((dimension - 3.0) / 2.0, (dimension - 3.0) / 2.0, 0)

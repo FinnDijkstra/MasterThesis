@@ -101,31 +101,31 @@ def _radial_interp(values, i, i2, frac):
     v1 = np.take(values, i2, mode='clip')
     return (1.0 - frac) * v0 + frac * v1
 
-def poly_from_gram_no_drift(G_re, G_im, startingPolynomial):
-    r = np.hypot(G_re, G_im)
-    ct = np.ones_like(G_re); nz = r > 0; ct[nz] = G_re[nz] / r[nz]
-    res = startingPolynomial.fastRadialEstimatorList[0].values.shape[0]
-    scaled = np.clip(r, 0.0, 1.0) * (res - 1)
-    i = np.floor(scaled).astype(np.int64)
-    i2 = np.minimum(i + 1, res - 1)
-    frac = scaled - i
-    out = _radial_interp(startingPolynomial.fastRadialEstimatorList[0].values, i, i2, frac)
-    gammaMax = getattr(startingPolynomial, "gammaMax",
-                       len(startingPolynomial.fastRadialEstimatorList) - 1)
-    if gammaMax >= 1:
-        c0 = np.ones_like(ct); c1 = ct
-        out += _radial_interp(startingPolynomial.fastRadialEstimatorList[1].values, i, i2, frac) * c1
-        for g in range(1, gammaMax):
-            c2 = 2.0 * ct * c1 - c0
-            out += _radial_interp(startingPolynomial.fastRadialEstimatorList[g+1].values, i, i2, frac) * c2
-            c0, c1 = c1, c2
-    return out  # (m,m), real
+# def poly_from_gram_no_drift(G_re, G_im, startingPolynomial):
+#     r = np.hypot(G_re, G_im)
+#     ct = np.ones_like(G_re); nz = r > 0; ct[nz] = G_re[nz] / r[nz]
+#     res = startingPolynomial.fastRadialEstimatorList[0].values.shape[0]
+#     scaled = np.clip(r, 0.0, 1.0) * (res - 1)
+#     i = np.floor(scaled).astype(np.int64)
+#     i2 = np.minimum(i + 1, res - 1)
+#     frac = scaled - i
+#     out = _radial_interp(startingPolynomial.fastRadialEstimatorList[0].values, i, i2, frac)
+#     gammaMax = getattr(startingPolynomial, "gammaMax",
+#                        len(startingPolynomial.fastRadialEstimatorList) - 1)
+#     if gammaMax >= 1:
+#         c0 = np.ones_like(ct); c1 = ct
+#         out += _radial_interp(startingPolynomial.fastRadialEstimatorList[1].values, i, i2, frac) * c1
+#         for g in range(1, gammaMax):
+#             c2 = 2.0 * ct * c1 - c0
+#             out += _radial_interp(startingPolynomial.fastRadialEstimatorList[g+1].values, i, i2, frac) * c2
+#             c0, c1 = c1, c2
+#     return out  # (m,m), real
 
 # --- CLOSED-FORM L2 crowding penalty over r=|<vi,vj>| ---
 def crowding_L2_closed_form(r_vals, h):
     """
     r_vals: (K,) with K = m(m-1)/2  magnitudes in [0,1]
-    returns: \int rho(r)^2 dr  with Gaussian kernel (grid-free)
+    returns: int rho(r)^2 dr  with Gaussian kernel (grid-free)
     """
     K = r_vals.shape[0]
     if K == 0:
