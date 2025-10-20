@@ -1,7 +1,7 @@
 # from typing import final
 import re
 
-from sympy.stats import Gamma
+# from sympy.stats import Gamma
 
 import OrthonormalPolyClasses
 import UnconstrainedPolyDiffOptimizer
@@ -542,16 +542,30 @@ def paramSetFromBorder(kBorder, gammaBorder):
 
 
 def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gammaBorder, listOfPointSets=None,
-                     nrOfPoints=2, nrOfPointSets=1,finalRun=False):
+                     nrOfPoints=2, nrOfPointSets=1,finalRun=False,kOnly=False):
     # print("A) before env:", rss())
     forbiddenRadius = float(forbiddenRadius)
     forbiddenAngle = float(forbiddenAngle)
     alpha = complexDimension - 2
-    kSet,gammaSet = paramSetFromBorder(kBorder, gammaBorder)
-    gammaMax = np.max(gammaBorder)
-    kMax = np.max(kBorder)
-    includedParamsArray = np.zeros((gammaMax+1,kMax+1),dtype=np.bool)
-    includedParamsArray[gammaSet, kSet] = True
+    if kOnly:
+        gammaMax = 0
+        kMax = np.max(kBorder)
+        gammaBorder = np.zeros(1)
+        kBorder = np.ones(1)*kMax
+        kSet = np.arange(kMax+1)
+        gammaSet = np.zeros_like(kSet)
+        includedParamsArray = np.zeros((gammaMax + 1, kMax + 1), dtype=np.bool)
+        includedParamsArray[gammaSet, kSet] = True
+        kMaxByGamma = np.max(np.multiply(includedParamsArray, np.arange(kMax + 1)), axis=1)
+        boundsForbidden = superBound(forbiddenRadius, complexDimension, np.array([kMax+1]), np.array([0]))[0]
+    else:
+        kSet,gammaSet = paramSetFromBorder(kBorder, gammaBorder)
+        gammaMax = np.max(gammaBorder)
+        kMax = np.max(kBorder)
+        includedParamsArray = np.zeros((gammaMax+1,kMax+1),dtype=np.bool)
+        includedParamsArray[gammaSet, kSet] = True
+        kMaxByGamma = np.max(np.multiply(includedParamsArray, np.arange(kMax + 1)), axis=1)
+        boundsForbidden = superBound(forbiddenRadius, complexDimension, kBorder, gammaBorder)[0]
     forbiddenZ = polar2z(forbiddenRadius, forbiddenAngle)
 
 
@@ -564,12 +578,13 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         ]
     else:
         nrOfPointSets = len(listOfPointSets)
-    boundsForbidden = superBound(forbiddenRadius, complexDimension, kBorder, gammaBorder)[0]
+
     listOfBoundArrays = {}
     listOfIdentityMatrices = {}
     ipmSetList = {}
     ipmRadList = {}
     ipmThetaList = {}
+
     for psIdx in range(nrOfPointSets):
         curPS = listOfPointSets[psIdx]
         ipm = curPS @ curPS.conj().T
@@ -577,13 +592,16 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         ipmRad, ipmTheta = z2polar(ipm)
         ipmRadList[psIdx] = ipmRad
         ipmThetaList[psIdx] = ipmTheta
-        foundBoundsCur = superBound(ipmRad, complexDimension, kBorder, gammaBorder)
+        if kOnly:
+            foundBoundsCur = superBound(ipmRad, complexDimension, np.array([kMax+1]), np.array([0]))
+        else:
+            foundBoundsCur = superBound(ipmRad, complexDimension, kBorder, gammaBorder)
         np.fill_diagonal(foundBoundsCur,0.0)
         listOfBoundArrays[psIdx] = foundBoundsCur
         identityMatrix = np.zeros_like(foundBoundsCur)
         np.fill_diagonal(identityMatrix, 1.0)
         listOfIdentityMatrices[psIdx] = identityMatrix
-    kMaxByGamma = np.max(np.multiply(includedParamsArray,np.arange(kMax+1)),axis=1)
+
     # kMaxByGamma = np.zeros(gammaMax+1)
     # for curGamma in range(gammaMax+1):
     #     kMaxByGamma[curGamma] = np.max(includedParamsArray,axis=0)
@@ -617,44 +635,54 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
 
 
         z1Var = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="z1")
-        z2Var = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'), name="z2")
+        z2Var = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'),  name="z2")
         z3Var = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'), ub=0, name="z3")
+        nuVar = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="nu")
 
-
-        forbiddenMuPlus = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuPlus")
-        forbiddenMuMin = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuMin")
+        # forbiddenMuPlus = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuPlus")
+        # forbiddenMuMin = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuMin")
         forbiddenMuAbs = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuAbs")
         forbiddenMuVal = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'), name="forbiddenMuVal")
-        m.addConstr(forbiddenMuAbs >= forbiddenMuPlus + forbiddenMuMin, name=f"AbsMuForbidden")
-        m.addConstr(forbiddenMuVal == forbiddenMuPlus - forbiddenMuMin, name=f"ValMuForbidden")
+        m.addConstr(forbiddenMuAbs >= -forbiddenMuVal, name=f"AbsMuForbidden")
+        m.addConstr(forbiddenMuAbs >= forbiddenMuVal, name=f"AbsMuForbidden")
+
+        # m.addConstr(forbiddenMuVal == forbiddenMuPlus - forbiddenMuMin, name=f"ValMuForbidden")
         muPlusDictOfVars = {}
         muMinDictOfVars = {}
         muAbsDictOfVars = {}
         muValDictOfVars = {}
+        psSizes = {}
         for psIdx, ipm in ipmSetList.items():
             n = ipm.shape[0]
-
-            muPlus = m.addVars((n, n), lb=0.0, name=f"MuPlusForSet{psIdx}")
-            muMin = m.addVars((n, n), lb=0.0, name=f"MuMinForSet{psIdx}")
+            psSizes[psIdx] = n
+            # muPlus = m.addVars(n, n, lb=0.0, name=f"MuPlusForSet{psIdx}")
+            # muMin = m.addVars(n, n, lb=0.0, name=f"MuMinForSet{psIdx}")
 
             # Optional: signed value mu = muPlus - muMin
-            muVal = m.addVars((n, n), lb=-float('inf'), name=f"MuValForSet{psIdx}")
-            m.addConstrs((muVal[idx1,idx2] == muPlus[idx1,idx2] - muMin[idx1,idx2]
-                          for idx1 in range(n) for idx2 in range(n)), name=f"MuSigned_{psIdx}")
+            muVal = m.addVars(n, n, lb=-float('inf'), name=f"MuValForSet{psIdx}")
+            # m.addConstrs((muVal[idx1,idx2] == muPlus[idx1,idx2] - muMin[idx1,idx2]
+            #               for idx1 in range(n) for idx2 in range(n)), name=f"MuSigned_{psIdx}")
+            charMat = characteristicMatrix(n)
+            nrOfSubsets = charMat.shape[1]
+            for curSubsetIdx in range(nrOfSubsets):
+                subsetPoints = np.nonzero(charMat[:,curSubsetIdx])[0]
+                m.addConstr(nuVar-gp.quicksum(muVal[idx1,idx2] for idx1 in subsetPoints for idx2 in subsetPoints)>=0)
 
             # Absolute-with-diagonal-exception:
             # off-diag: muAbs = muPlus + muMin
             # diag:     muAbs = muPlus - muMin
-            muAbs = m.addVars((n, n), lb=0, name=f"MuAbsForSet{psIdx}")
+            muAbs = m.addVars(n, n, lb=0, name=f"MuAbsForSet{psIdx}")
             M = np.ones((n, n))
             np.fill_diagonal(M, -1.0)  # +1 off-diag, -1 on diag
             # The trick is that this makes offdiagonals of |mu_uv| and diagonals of -mu_vv such that the
             # constraint for compensating the concatenation is z_2-<EPS(V,V),MU_abs>=z_2-eps_uv|mu_uv| +eps_vv mu_vv
-            m.addConstr((muVal[idx1,idx2] == muPlus[idx1,idx2] + muMin[idx1,idx2]
+            m.addConstrs((muAbs[idx1,idx2] >= muVal[idx1,idx2]
+                          for idx1 in range(n) for idx2 in range(n)), name=f"AbsMix_{psIdx}")
+            m.addConstrs((muAbs[idx1, idx2] >= -muVal[idx1, idx2]
                           for idx1 in range(n) for idx2 in range(n)), name=f"AbsMix_{psIdx}")
 
-            muPlusDictOfVars[psIdx] = muPlus
-            muMinDictOfVars[psIdx] = muMin
+            # muPlusDictOfVars[psIdx] = muPlus
+            # muMinDictOfVars[psIdx] = muMin
             muAbsDictOfVars[psIdx] = muAbs
             muValDictOfVars[psIdx] = muVal
             # n = ipm.shape[0]
@@ -707,17 +735,22 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
                     continue
                 else:
                     m.addConstr(z2Var + forbiddenInnerCur[curK]*forbiddenMuVal +
-                                gp.quicksum((diskPolyVals[i][curK]*muValDictOfVars[i])
+                                gp.quicksum(gp.quicksum(diskPolyVals[i][curK,idx1,idx2]*muValDictOfVars[i][idx1,idx2]
+                                             for idx1 in range(psSizes[i]) for idx2 in range(psSizes[i]))
                                                                              for i in range(nrOfPointSets)) >= 1)
 
 
-        # concat constraint
-        m.addConstr(z2Var - boundsForbidden * forbiddenMuAbs -
-                    gp.quicksum((listOfBoundArrays[i] * muAbsDictOfVars[i]).sum() for i in range(nrOfPointSets))
-                                + gp.quicksum((listOfIdentityMatrices[i] * muValDictOfVars[i]).sum()
-                                for i in range(nrOfPointSets)) >= 1)
-        objExpression = z1Var + gp.quicksum((muValDictOfVars[i]).sum()
-                                   for i in range(nrOfPointSets))
+        # # concat constraint
+        m.addConstr(z2Var - boundsForbidden * forbiddenMuAbs +
+                    gp.quicksum(gp.quicksum(-listOfBoundArrays[i][idx1,idx2] * muAbsDictOfVars[i][idx1,idx2]
+                                 for idx1 in range(psSizes[i])
+                                 for idx2 in range(psSizes[i]) if idx1 != idx2) for i in range(nrOfPointSets))
+                                + gp.quicksum(gp.quicksum(listOfIdentityMatrices[i][idx1,idx1] * muValDictOfVars[i][idx1,idx1]
+                                               for idx1 in range(psSizes[i]))
+                                                for i in range(nrOfPointSets)) >= 1)
+        # objExpression = z1Var + gp.quicksum((muValDictOfVars[i]).sum()
+        #                            for i in range(nrOfPointSets))
+        objExpression = z1Var + nuVar
         m.setObjective(objExpression, GRB.MINIMIZE)
 
         # Lower-bound loop
@@ -730,13 +763,13 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
             # ub = m.addConstr(objExpression <= ubVal*(looseningFactor**tryNumber))
             m.update()
             m.optimize()
-            m.computeIIS()
-            for c in m.getConstrs():
-                if c.IISConstr: print(c.ConstrName)
-            for qc in m.getQConstrs():
-                if qc.IISQConstr: print(qc.QCName)
-            for v in m.getVars():
-                if v.IISLB or v.IISUB: print("BOUND", v.VarName, v.LB, v.UB)
+            # m.computeIIS()
+            # for c in m.getConstrs():
+            #     if c.IISConstr: print(c.ConstrName)
+            # for qc in m.getQConstrs():
+            #     if qc.IISQConstr: print(qc.QCName)
+            # for v in m.getVars():
+            #     if v.IISLB or v.IISUB: print("BOUND", v.VarName, v.LB, v.UB)
             if m.Status != GRB.OPTIMAL and m.Status != GRB.SUBOPTIMAL:
                 # m.remove(ub)
                 tryNumber += 1
@@ -2354,9 +2387,9 @@ if __name__ == '__main__':
     testZArray = polar2z(testRadArray,testThetaArray)
     # finds a border such that concatenating that way makes the problem
     # have an optimal value of around (1+objDiffMax)*theta (likely lower though)
-    objDiffMax = 0.1
+    objDiffMax = 0.0001
     testKBorder,testGammaBorder = borderBasedOnEpsilon(objDiffMax/AMax,testDim,ipmTestSet)
-
+    testKBorder[0]=5000
 
     testkArray = np.arange(3)
     testgammaArray = np.arange(500)
@@ -2366,7 +2399,7 @@ if __name__ == '__main__':
     foundBounds = superBound(radiusSet1,testDim,testKBorder,testGammaBorder,True)
     # allZeroGammaBorder = np.ones_like(testGammaBorder,dtype=int)
     # allZeroGammaBorder[-1] = 0
-    concatDual(0,0,testDim,testKBorder,allZeroGammaBorder, listOfPointSets=[pointSet])
+    concatDual(0,0,testDim,testKBorder,testGammaBorder, listOfPointSets=[pointSet],kOnly=True)
     # kMax = 500
     # testkArray = np.arange(kMax)
     # testgammaArray = np.clip(np.ceil(kMax ** 2 / np.clip(testkArray, 1, np.inf) - testkArray), 0, kMax ** 2)
