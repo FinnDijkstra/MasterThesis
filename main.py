@@ -544,6 +544,8 @@ def paramSetFromBorder(kBorder, gammaBorder):
 def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gammaBorder, listOfPointSets=None,
                      nrOfPoints=2, nrOfPointSets=1,finalRun=False):
     # print("A) before env:", rss())
+    forbiddenRadius = float(forbiddenRadius)
+    forbiddenAngle = float(forbiddenAngle)
     alpha = complexDimension - 2
     kSet,gammaSet = paramSetFromBorder(kBorder, gammaBorder)
     gammaMax = np.max(gammaBorder)
@@ -562,16 +564,31 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         ]
     else:
         nrOfPointSets = len(listOfPointSets)
-    boundsForbidden = superBound(forbiddenZ, complexDimension, kBorder, gammaBorder)
-    listOfBoundArrays = []
-    for curPointSet in listOfPointSets:
-        listOfBoundArrays.append(superBound(curPointSet, complexDimension, kBorder, gammaBorder))
+    boundsForbidden = superBound(forbiddenRadius, complexDimension, kBorder, gammaBorder)[0]
+    listOfBoundArrays = {}
+    listOfIdentityMatrices = {}
+    ipmSetList = {}
+    ipmRadList = {}
+    ipmThetaList = {}
+    for psIdx in range(nrOfPointSets):
+        curPS = listOfPointSets[psIdx]
+        ipm = curPS @ curPS.conj().T
+        ipmSetList[psIdx] = ipm
+        ipmRad, ipmTheta = z2polar(ipm)
+        ipmRadList[psIdx] = ipmRad
+        ipmThetaList[psIdx] = ipmTheta
+        foundBoundsCur = superBound(ipmRad, complexDimension, kBorder, gammaBorder)
+        np.fill_diagonal(foundBoundsCur,0.0)
+        listOfBoundArrays[psIdx] = foundBoundsCur
+        identityMatrix = np.zeros_like(foundBoundsCur)
+        np.fill_diagonal(identityMatrix, 1.0)
+        listOfIdentityMatrices[psIdx] = identityMatrix
     kMaxByGamma = np.max(np.multiply(includedParamsArray,np.arange(kMax+1)),axis=1)
     # kMaxByGamma = np.zeros(gammaMax+1)
     # for curGamma in range(gammaMax+1):
     #     kMaxByGamma[curGamma] = np.max(includedParamsArray,axis=0)
     #     kMaxByGamma[curGamma] = np.max(kSet[np.where(gammaSet == curGamma)])
-    diskPolysByGamma = [Disk(alpha, g, kMaxByGamma[g]+1) for g in range(gammaMax+1)]
+    diskPolysByGamma = [Disk(alpha, g, kMaxByGamma[g]) for g in range(gammaMax+1)]
 
     # ---- Gurobi in short-lived env ----
     env = gp.Env(empty=True)
@@ -581,122 +598,153 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
     try:
         m = gp.Model(env=env)
         m.setParam("OutputFlag", 1)
-        m.setParam(GRB.Param.FeasibilityTol, 1e-8)
-        m.setParam(GRB.Param.BarConvTol, 1e-9)
-        m.setParam(GRB.Param.BarQCPConvTol, 1e-9)
+        # m.setParam(GRB.Param.FeasibilityTol, 1e-8)
+        # m.setParam(GRB.Param.BarConvTol, 1e-9)
+        # m.setParam(GRB.Param.BarQCPConvTol, 1e-9)
         # m.setParam(GRB.Param.MIPGap, 1e-9)
-        m.setParam(GRB.Param.IntFeasTol, 1e-9)
+        # m.setParam(GRB.Param.IntFeasTol, 1e-9)
         # m.setParam(GRB.Param.PSDTol, 1e-9)
-        m.setParam(GRB.Param.OptimalityTol, 1e-8)
+        # m.setParam(GRB.Param.OptimalityTol, 1e-8)
         # m.setParam(GRB.Param.DualReductions, 0)
-        m.setParam(GRB.Param.Crossover, 2)
-        m.setParam(GRB.Param.NonConvex, 2)
-        m.setParam(GRB.Param.Method, 2)
-        m.setParam(GRB.Param.BarHomogeneous, 1)
+        # m.setParam(GRB.Param.Crossover, 2)
+        m.setParam(GRB.Param.NonConvex, 0)
+        # m.setParam(GRB.Param.Method, 2)
+        # m.setParam(GRB.Param.BarHomogeneous, 1)
         # m.setParam(GRB.Param.ScaleFlag,0)
         if finalRun:
             m.setParam(GRB.Param.NumericFocus, 3)
-        # m.setParam(GRB.Param.Presolve, 0)
+        m.setParam(GRB.Param.Presolve, 0)
 
 
         z1Var = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="z1")
-        z2Var = m.addVar(vtype=GRB.CONTINUOUS, name="z2")
-        z3Var = m.addVar(vtype=GRB.CONTINUOUS, ub=0, name="z3")
+        z2Var = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'), name="z2")
+        z3Var = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'), ub=0, name="z3")
 
 
         forbiddenMuPlus = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuPlus")
         forbiddenMuMin = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuMin")
+        forbiddenMuAbs = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuAbs")
+        forbiddenMuVal = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'), name="forbiddenMuVal")
+        m.addConstr(forbiddenMuAbs >= forbiddenMuPlus + forbiddenMuMin, name=f"AbsMuForbidden")
+        m.addConstr(forbiddenMuVal == forbiddenMuPlus - forbiddenMuMin, name=f"ValMuForbidden")
         muPlusDictOfVars = {}
         muMinDictOfVars = {}
-        for psIdx in range(len(listOfPointSets)):
-            curPS = listOfPointSets[psIdx]
-            muPlusDictOfVars[psIdx] = m.addMVar(curPS.shape, vtype=GRB.CONTINUOUS, lb=0, name=f"MuPlusForSet{psIdx}")
-            muMinDictOfVars[psIdx] = m.addMVar(curPS.shape, vtype=GRB.CONTINUOUS, lb=0, name=f"MuMinForSet{psIdx}")
+        muAbsDictOfVars = {}
+        muValDictOfVars = {}
+        for psIdx, ipm in ipmSetList.items():
+            n = ipm.shape[0]
 
-        # diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.SEMICONT, lb=0,ub=1, name="w")
+            muPlus = m.addVars((n, n), lb=0.0, name=f"MuPlusForSet{psIdx}")
+            muMin = m.addVars((n, n), lb=0.0, name=f"MuMinForSet{psIdx}")
+
+            # Optional: signed value mu = muPlus - muMin
+            muVal = m.addVars((n, n), lb=-float('inf'), name=f"MuValForSet{psIdx}")
+            m.addConstrs((muVal[idx1,idx2] == muPlus[idx1,idx2] - muMin[idx1,idx2]
+                          for idx1 in range(n) for idx2 in range(n)), name=f"MuSigned_{psIdx}")
+
+            # Absolute-with-diagonal-exception:
+            # off-diag: muAbs = muPlus + muMin
+            # diag:     muAbs = muPlus - muMin
+            muAbs = m.addVars((n, n), lb=0, name=f"MuAbsForSet{psIdx}")
+            M = np.ones((n, n))
+            np.fill_diagonal(M, -1.0)  # +1 off-diag, -1 on diag
+            # The trick is that this makes offdiagonals of |mu_uv| and diagonals of -mu_vv such that the
+            # constraint for compensating the concatenation is z_2-<EPS(V,V),MU_abs>=z_2-eps_uv|mu_uv| +eps_vv mu_vv
+            m.addConstr((muVal[idx1,idx2] == muPlus[idx1,idx2] + muMin[idx1,idx2]
+                          for idx1 in range(n) for idx2 in range(n)), name=f"AbsMix_{psIdx}")
+
+            muPlusDictOfVars[psIdx] = muPlus
+            muMinDictOfVars[psIdx] = muMin
+            muAbsDictOfVars[psIdx] = muAbs
+            muValDictOfVars[psIdx] = muVal
+            # n = ipm.shape[0]
+            #
+            # muPlus = m.addMVar((n, n), lb=0.0, name=f"MuPlusForSet{psIdx}")
+            # muMin = m.addMVar((n, n), lb=0.0, name=f"MuMinForSet{psIdx}")
+            #
+            # # Optional: signed value mu = muPlus - muMin
+            # muVal = m.addMVar((n, n),lb=-float('inf'), name=f"MuValForSet{psIdx}")
+            # m.addConstr(muVal == muPlus - muMin, name=f"MuSigned_{psIdx}")
+            #
+            # # Absolute-with-diagonal-exception:
+            # # off-diag: muAbs = muPlus + muMin
+            # # diag:     muAbs = muPlus - muMin
+            # muAbs = m.addMVar((n, n),lb=0, name=f"MuAbsForSet{psIdx}")
+            # M = np.ones((n, n))
+            # np.fill_diagonal(M, -1.0)  # +1 off-diag, -1 on diag
+            # # The trick is that this makes offdiagonals of |mu_uv| and diagonals of -mu_vv such that the
+            # # constraint for compensating the concatenation is z_2-<EPS(V,V),MU_abs>=z_2-eps_uv|mu_uv| +eps_vv mu_vv
+            # m.addConstr(muAbs >= muPlus + muMin, name=f"AbsMix_{psIdx}")
+            #
+            # muPlusDictOfVars[psIdx] = muPlus
+            # muMinDictOfVars[psIdx] = muMin
+            # muAbsDictOfVars[psIdx] = muAbs
+            # muValDictOfVars[psIdx] = muVal
+
 
         # Forbidden-IP constraint
-        forbiddenInner = np.zeros((gammaMax, kMax))
-        for g in range(gammaMax):
-            forbiddenInner[g] = diskPolysByGamma[g].calcAtRTheta(forbiddenRadius, forbiddenAngle)
-        # m.addConstr(gp.quicksum(forbiddenInner[g, k]*diskPolyWeights[g, k]
-        #                         for g in range(gammaMax) for k in range(kMax)) == 0)
+        forbiddenInner = np.zeros((gammaMax+1, kMax+1))
+        for g in range(gammaMax+1):
+            forbiddenInner[g,:kMaxByGamma[g]+1] = diskPolysByGamma[g].calcAtRTheta(forbiddenRadius, forbiddenAngle)
+
 
         # “SDP” constraint you coded (quadratic)
-        m.addConstr(-z1Var*z3Var - z2Var*z2Var/4 >= 0, name="SDP constraint")
+        # m.addQConstr(4*z1Var*(-z3Var) >= z2Var*z2Var, name="SDP constraint")
+        m.addQConstr(z2Var * z2Var <= 4.0 * z1Var * (-z3Var),  # same constraint, convex sense
+                     name="PSD_2x2")
+        # k=gamma=0 constraint
+        m.addConstr(z2Var+z3Var + forbiddenMuVal + gp.quicksum((muValDictOfVars[i]).sum()
+                                   for i in range(nrOfPointSets))>=1)
+        # Loop over gammas
+        for curGamma in range(gammaMax+1):
+            relevantKVals = includedParamsArray[curGamma]
+            diskPolyVals = {}
+            for psIdx in range(nrOfPointSets):
+                diskPolyVals[psIdx] = diskPolysByGamma[curGamma].calcAtRTheta(ipmRadList[psIdx],ipmThetaList[psIdx])
+            forbiddenInnerCur = forbiddenInner[curGamma]
+            for curK in np.nonzero(relevantKVals)[0]:
+                if curGamma == 0 and curK == 0:
+                    continue
+                else:
+                    m.addConstr(z2Var + forbiddenInnerCur[curK]*forbiddenMuVal +
+                                gp.quicksum((diskPolyVals[i][curK]*muValDictOfVars[i])
+                                                                             for i in range(nrOfPointSets)) >= 1)
 
-        # k=gamma=0 constraint MY BRAINNN IS ROTTTING
-        m.addConstr(z2Var+z3Var+(forbiddenMuPlus))
-        # Build per–point-set pieces
-        largestSet = 0
-        nInit = listOfPointSets[0].shape[0]
-        charM = characteristicMatrix(nInit)
-        nrSets = charM.shape[1]
-        for ps_idx in range(nrOfPointSets):
-            pts = listOfPointSets[ps_idx]
-            n = pts.shape[0]
-            if charM.shape[0] != n:
-                # Characteristic matrix — consider sparse (see §3)
-                charM = characteristicMatrix(n)                  # shape (n, nrSets)
-                nrSets = charM.shape[1]
-            setW = m.addVars(nrSets, vtype=GRB.SEMICONT, lb=0,ub=1, name=f"s_{ps_idx}")
-            # m.addConstr(setW.sum() <= 1)
-            if nrSets > largestSet:
-                largestSet = nrSets
-            m.addConstr(setW[0]==0)
-            # IPM and disk poly values (avoid 4-D tensor; see §3)
-            ipm = pts @ pts.conj().T
-            r, th = z2polar(ipm)
-            np.round(r, 14, out=r)
-            np.round(th, 14, out=th)
-            # For each pair, avoid creating a full charVector array if it’s sparse:
-            for i in range(n):
-                for j in range(i+1):
-                    # left: sum_{g,k} DP[g,k,i,j] * w[g,k]
-                    # compute DP row-on-demand, no 4-D tensor:
-                    lin = gp.LinExpr()
-                    for g in range(gammaMax):
-                        vals = diskPolysByGamma[g].calcAtRTheta(r[i, j], th[i, j])  # shape (kMax,)
-                        for k in range(kMax):
-                            if vals[k] != 0.0:
-                                lin.addTerms(vals[k], diskPolyWeights[g, k])
 
-                    # right: sum_{S} setW[S] * (charM[i,S] & charM[j,S])
-                    # use nonzeros only
-                    nz = np.flatnonzero(charM[i] * charM[j])
-                    setWeightConstr.append(m.addConstr(lin == gp.quicksum(setW[s] for s in nz)))
-            setWeightVars.append(setW)
-        # m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
-        m.setObjective(diskPolyWeights[0,0],GRB.MAXIMIZE)
+        # concat constraint
+        m.addConstr(z2Var - boundsForbidden * forbiddenMuAbs -
+                    gp.quicksum((listOfBoundArrays[i] * muAbsDictOfVars[i]).sum() for i in range(nrOfPointSets))
+                                + gp.quicksum((listOfIdentityMatrices[i] * muValDictOfVars[i]).sum()
+                                for i in range(nrOfPointSets)) >= 1)
+        objExpression = z1Var + gp.quicksum((muValDictOfVars[i]).sum()
+                                   for i in range(nrOfPointSets))
+        m.setObjective(objExpression, GRB.MINIMIZE)
 
         # Lower-bound loop
         lb_ok = False
-        p = complexDimension - 1
+        ubVal = 0.5**(complexDimension-1)
+        looseningFactor = 1.1
+        tryNumber = 1
         while not lb_ok:
             # lb = m.addConstr(diskPolyWeights.sum() >= (0.5)**p)
-            lb = m.addConstr(diskPolyWeights[0,0] >= (0.5) ** p)
+            # ub = m.addConstr(objExpression <= ubVal*(looseningFactor**tryNumber))
             m.update()
             m.optimize()
-            print(m.objBound)
+            m.computeIIS()
+            for c in m.getConstrs():
+                if c.IISConstr: print(c.ConstrName)
+            for qc in m.getQConstrs():
+                if qc.IISQConstr: print(qc.QCName)
+            for v in m.getVars():
+                if v.IISLB or v.IISUB: print("BOUND", v.VarName, v.LB, v.UB)
             if m.Status != GRB.OPTIMAL and m.Status != GRB.SUBOPTIMAL:
-                print(m.objBound)
-                m.remove(lb)
-                p += 1
+                # m.remove(ub)
+                tryNumber += 1
             else:
                 lb_ok = True
         print(m.objBound)
         objVal = m.objVal
-        for setW in setWeightVars:
-            print(sum(setWCur.X for setWCur in setW.values()))
-        diskSum = sum(diskPolyWeights[g, k].X for g in range(gammaMax) for k in range(kMax))
-        diskWeightsArray = np.array([[diskPolyWeights[g, k].X for k in range(kMax)]
-                                     for g in range(gammaMax)])
-        adjustedDWA = diskWeightsArray * objVal
-        objBound = m.objBound
-        if objBound-diskSum < 0 or objBound > 1.1 * diskSum:
-            print(f"bound obj error with primal dual difference: {objBound-diskSum}")
-        # print("b) return:", rss())
-        return adjustedDWA, max(objBound,diskSum), diskWeightsArray
+        return objVal
 
     finally:
         # Ensure native memory is released
@@ -706,7 +754,7 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
             pass
         env.dispose()
         # Drop big Python refs promptly
-        del diskPolysByGamma, listOfPointSets
+        del diskPolysByGamma, listOfPointSets, listOfBoundArrays, ipmSetList, ipmRadList, ipmThetaList
         # print("C) end:", rss())
 
 
@@ -2306,7 +2354,7 @@ if __name__ == '__main__':
     testZArray = polar2z(testRadArray,testThetaArray)
     # finds a border such that concatenating that way makes the problem
     # have an optimal value of around (1+objDiffMax)*theta (likely lower though)
-    objDiffMax = 0.01
+    objDiffMax = 0.1
     testKBorder,testGammaBorder = borderBasedOnEpsilon(objDiffMax/AMax,testDim,ipmTestSet)
 
 
@@ -2316,8 +2364,9 @@ if __name__ == '__main__':
 
     testkMesh,testgammaMesh = np.meshgrid(testkArray,testgammaArray)
     foundBounds = superBound(radiusSet1,testDim,testKBorder,testGammaBorder,True)
-
-    concatDual(0,0,testDim,testKBorder,testGammaBorder, pointSet)
+    # allZeroGammaBorder = np.ones_like(testGammaBorder,dtype=int)
+    # allZeroGammaBorder[-1] = 0
+    concatDual(0,0,testDim,testKBorder,allZeroGammaBorder, listOfPointSets=[pointSet])
     # kMax = 500
     # testkArray = np.arange(kMax)
     # testgammaArray = np.clip(np.ceil(kMax ** 2 / np.clip(testkArray, 1, np.inf) - testkArray), 0, kMax ** 2)
