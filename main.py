@@ -637,7 +637,7 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         z1Var = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="z1")
         z2Var = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'),  name="z2")
         z3Var = m.addVar(vtype=GRB.CONTINUOUS,lb=-float('inf'), ub=0, name="z3")
-        nuVar = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="nu")
+
 
         # forbiddenMuPlus = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuPlus")
         # forbiddenMuMin = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name="forbiddenMuMin")
@@ -647,12 +647,14 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         m.addConstr(forbiddenMuAbs >= forbiddenMuVal, name=f"AbsMuForbidden")
 
         # m.addConstr(forbiddenMuVal == forbiddenMuPlus - forbiddenMuMin, name=f"ValMuForbidden")
-        muPlusDictOfVars = {}
-        muMinDictOfVars = {}
+        # muPlusDictOfVars = {}
+        # muMinDictOfVars = {}
         muAbsDictOfVars = {}
         muValDictOfVars = {}
         psSizes = {}
+        nuVarDict = {}
         for psIdx, ipm in ipmSetList.items():
+            nuVar = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"nu{psIdx}")
             n = ipm.shape[0]
             psSizes[psIdx] = n
             # muPlus = m.addVars(n, n, lb=0.0, name=f"MuPlusForSet{psIdx}")
@@ -685,6 +687,7 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
             # muMinDictOfVars[psIdx] = muMin
             muAbsDictOfVars[psIdx] = muAbs
             muValDictOfVars[psIdx] = muVal
+            nuVarDict[psIdx] = nuVar
             # n = ipm.shape[0]
             #
             # muPlus = m.addMVar((n, n), lb=0.0, name=f"MuPlusForSet{psIdx}")
@@ -750,7 +753,7 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
                                                 for i in range(nrOfPointSets)) >= 1)
         # objExpression = z1Var + gp.quicksum((muValDictOfVars[i]).sum()
         #                            for i in range(nrOfPointSets))
-        objExpression = z1Var + nuVar
+        objExpression = z1Var + sum(curNuVar for curNuVar in nuVarDict.values())
         m.setObjective(objExpression, GRB.MINIMIZE)
 
         # Lower-bound loop
@@ -1808,6 +1811,44 @@ def readPointsetAndRunModelWith(fileLocation,testKey, overridingSetting=None):
     yeah = "yeah"
 
 
+def readPointsetAndRunDualWith(fileLocation,testKey, eps=0.01,overridingSetting=None):
+    if overridingSetting is None:
+        overridingSetting = {}
+    file = open(fileLocation)
+    dataDict = json.load(file)[testKey]
+    del dataDict["coeficients disk polynomials list"], dataDict["unscaled coeficients"]
+    pointsets = listToCompArray(dataDict["used point sets"])
+    inputParams = dataDict["input parameters"]
+    pointsetsList = [curPs for curPs in pointsets.values()][:3]
+    pointsets = {curPsIdx: pointsetsList[curPsIdx] for curPsIdx in range(3)}
+    maxGammaRead = inputParams["maxGamma"]
+    inputRad = inputParams["forbiddenRad"]
+    inputTheta = inputParams["forbiddenTheta"]
+    inputZ = polar2z(inputRad,inputTheta)
+    inputDim = inputParams["dim"]
+    if maxGammaRead == 0:
+        kOnlyInput = True
+    else:
+        kOnlyInput = False
+    inputIpms = [curPs @ np.conj(curPs).T for curPs in pointsets.values()] + [np.array(inputZ)]
+    allInputIpms = np.concatenate(inputIpms, axis=None)
+    inputKBorder, inputGammaBorder = borderBasedOnEpsilon(eps, inputDim,allInputIpms, kOnly=kOnlyInput)
+    inputParams.update(overridingSetting)
+    listOfStichedSets = stitchSets(list(pointsets.values()), inputParams["setLinks"])
+    # inputParams = dataDict["input parameters"]
+    # inputParams.update(overridingSetting)
+    concatDual(forbiddenRadius=inputRad,
+                    forbiddenAngle=inputTheta,
+                    complexDimension=inputDim,
+                    kBorder=inputKBorder,
+                    gammaBorder=inputGammaBorder,
+                    listOfPointSets=listOfStichedSets,
+                    finalRun=False,
+                    kOnly=kOnlyInput)
+    yeah = "yeah"
+
+
+
 def readOrInitFacetScores():
     path = Path(facetFileLoc)
     global facetScoreDF
@@ -2296,7 +2337,7 @@ def superBound(radiusArray,comDim,kArrayShaped,gammaArrayShaped, perParamaterBoo
         return epsMatrix
 
 
-def borderBasedOnEpsilon(eps, comDim, ipmSet):
+def borderBasedOnEpsilon(eps, comDim, ipmSet,kOnly=False):
     radiusSet, thetaSet = z2polar(ipmSet)
     nonZero = (radiusSet > 0+eps)
     nonOne = (radiusSet < 1-eps)
@@ -2314,6 +2355,10 @@ def borderBasedOnEpsilon(eps, comDim, ipmSet):
         calcedEps = bigBounds(mainRad, comDim, interestedK,interestedGamma,perParamaterBool=True)[0]
         sufficientK = (calcedEps <= eps)
         maxK = np.min(np.argwhere(sufficientK))+1
+    if kOnly:
+        foundKBorder = np.array([maxK],dtype=int)
+        foundGammaBorder = np.zeros_like(foundKBorder)
+        return foundKBorder, foundGammaBorder
     foundKBorder = np.arange(maxK+1)
     foundGammaBorder = np.zeros_like(foundKBorder)
     kLeftToFind = np.ones_like(foundKBorder,dtype=np.bool)
@@ -2347,10 +2392,10 @@ def quickJumpNavigator():
 
 
 if __name__ == '__main__':
-    testPath = "TestResults_sequentialEdges_11_09_17-46.json"
-    testKey = "TestNr2"
-    # readPointsetAndRunModelWith(testPath, testKey,
-    #                             overridingSetting={"maxDeg":1500, "setLinks":3})
+    testPath = "TestResults_sequentialEdges_07_09_14-32.json"
+    testKey = "TestNr0"
+    readPointsetAndRunDualWith(testPath, testKey,
+                                overridingSetting={"setLinks":3})
     # gc.disable()
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",3:"uniformCoordinateWise",4:"compareToLowerBound"}
     testDim = 4
