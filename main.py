@@ -118,12 +118,12 @@ def finalBQPModel(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, k
         diskPolysByGamma = [Disk(alpha, curGamma, kMax-1) for curGamma in range(gammaMax)]
 
         for pointSetIdx in range(nrOfPointSets):
-            pointSet = listOfPointSets[pointSetIdx]
+            curPointSet = listOfPointSets[pointSetIdx]
             nrOfPoints = pointSet.shape[0]
             # charMatrix = characteristicMatrix(nrOfPoints)
             nrOfSets = 2**nrOfPoints
 
-            innerProductMatrix = pointSet @ pointSet.conj().T
+            innerProductMatrix = curPointSet @ curPointSet.conj().T
             ipmRads, ipmAngles = z2polar(innerProductMatrix)
             diskPolyValueTensor = np.zeros((gammaMax, kMax, nrOfPoints, nrOfPoints))
             for gamma in range(gammaMax):
@@ -235,12 +235,27 @@ def finalBQPModel(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, k
 
 
 def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, kMax, listOfPointSets=None,
-                     nrOfPoints=2, nrOfPointSets=1,finalRun=False):
-    # print("A) before env:", rss())
+                     nrOfPoints=2, nrOfPointSets=1,finalRun=False,compensateConcat=False):
     alpha = complexDimension - 2
+    if gammaMax == 0:
+        kOnly = True
+    else:
+        kOnly = False
     gammaMax = int(gammaMax + 1)
     kMax = int(kMax + 1)
+    if compensateConcat:
+        if kOnly:
+            kBorder = np.array([kMax],dtype=int)
+            gammaBorder = np.zeros_like(kBorder)
+        else:
+            kBorder = np.arange(kMax+1,dtype=int)
+            gammaBorder = gammaMax*np.ones_like(kBorder)
+            gammaBorder[-1] = 0
+    else:
+        kBorder = np.zeros(1,dtype=int)
+        gammaBorder = np.zeros(1,dtype=int)
     forbiddenZ = polar2z(forbiddenRadius, forbiddenAngle)
+    errorForbidden = superBound(forbiddenRadius,complexDimension,kBorder,gammaBorder)[0]
 
     # ---- build inputs (try to keep them small / see §3) ----
     if listOfPointSets is None:
@@ -279,16 +294,24 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
         m.setParam(GRB.Param.Presolve, 0)
 
         diskPolyWeights = m.addVars(gammaMax, kMax, vtype=GRB.SEMICONT, lb=0,ub=1, name="w")
-
+        errorFuncWeight = m.addVar(vtype=GRB.SEMICONT, lb=0,ub=1, name="errorWeight")
+        if compensateConcat:
+            betaForbidden = m.addVar(lb=-1.0, ub=1.0, name="betaAtForbidden")
+            m.addConstr(betaForbidden <= errorForbidden*errorFuncWeight)
+            m.addConstr(-betaForbidden <= errorForbidden * errorFuncWeight)
+        else:
+            m.addConstr(errorFuncWeight == 0)
+            betaForbidden = m.addVar(lb=0.0,ub=0.0,name="betaAtForbidden")
         # Forbidden-IP constraint
         forbiddenInner = np.zeros((gammaMax, kMax))
         for g in range(gammaMax):
             forbiddenInner[g] = diskPolysByGamma[g].calcAtRTheta(forbiddenRadius, forbiddenAngle)
         m.addConstr(gp.quicksum(forbiddenInner[g, k]*diskPolyWeights[g, k]
-                                for g in range(gammaMax) for k in range(kMax)) == 0)
+                                for g in range(gammaMax) for k in range(kMax))+betaForbidden == 0)
 
         # “SDP” constraint you coded (quadratic)
-        m.addConstr(diskPolyWeights[0, 0] - diskPolyWeights.sum()*diskPolyWeights.sum() >= 0)
+        m.addConstr(diskPolyWeights[0, 0] -
+                    (diskPolyWeights.sum()+errorFuncWeight)*(diskPolyWeights.sum()+errorFuncWeight) >= 0)
         # m.addConstr(diskPolyWeights.sum() == 1)
         setWeightVars = []
         setWeightConstr = []
@@ -305,6 +328,7 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
                 charM = characteristicMatrix(n)                  # shape (n, nrSets)
                 nrSets = charM.shape[1]
             setW = m.addVars(nrSets, vtype=GRB.SEMICONT, lb=0,ub=1, name=f"s_{ps_idx}")
+
             m.addConstr(setW.sum() == 1)
             if nrSets > largestSet:
                 largestSet = nrSets
@@ -314,12 +338,26 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
             r, th = z2polar(ipm)
             np.round(r, 14, out=r)
             np.round(th, 14, out=th)
+            if compensateConcat:
+                rAlmostOne = (r >= 1-1e-8)
+                thAlmostZero = (np.abs(th) <= 1e-8)
+                zAlmostOne = rAlmostOne*thAlmostZero
+                betaVars = m.addVars(*r.shape,vtype=GRB.CONTINUOUS,lb=-1,ub=1,name=f"PS{ps_idx}_beta")
+                errorTerms = superBound(r,complexDimension,kBorder,gammaBorder)
             # For each pair, avoid creating a full charVector array if it’s sparse:
             for i in range(n):
                 for j in range(i+1):
                     # left: sum_{g,k} DP[g,k,i,j] * w[g,k]
                     # compute DP row-on-demand, no 4-D tensor:
                     lin = gp.LinExpr()
+                    if compensateConcat:
+                        m.addConstr(betaVars[i,j]==betaVars[j,i])
+                        if zAlmostOne[i,j]:
+                            m.addConstr(betaVars[i,j] == errorFuncWeight)
+                        else:
+                            m.addConstr(betaVars[i,j] <= errorTerms[i,j] * errorFuncWeight)
+                            m.addConstr(-betaVars[i, j] <= errorTerms[i, j] * errorFuncWeight)
+                        lin.addTerms(1,betaVars[i,j])
                     for g in range(gammaMax):
                         vals = diskPolysByGamma[g].calcAtRTheta(r[i, j], th[i, j])  # shape (kMax,)
                         for k in range(kMax):
@@ -331,7 +369,7 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
                     nz = np.flatnonzero(charM[i] * charM[j])
                     setWeightConstr.append(m.addConstr(lin == gp.quicksum(setW[s] for s in nz)))
             setWeightVars.append(setW)
-        m.setObjective(diskPolyWeights.sum(), GRB.MAXIMIZE)
+        m.setObjective(diskPolyWeights.sum() + errorFuncWeight, GRB.MAXIMIZE)
         # m.setObjective(diskPolyWeights[0,0],GRB.MAXIMIZE)
 
         # Lower-bound loop
@@ -350,11 +388,11 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
                 m.remove(lb)
                 p += 1
             else:
-                cons = m.getConstrs()
-                vio = m.getAttr("Slack", cons)
-                for i in sorted(range(len(cons)), key=lambda i: vio[i], reverse=True)[:10]:
-                    row = m.getRow(cons[i])
-                    print(f"row {i} vio={vio[i]:.2e} rhs={cons[i].RHS:.3g}")
+                # cons = m.getConstrs()
+                # vio = m.getAttr("Slack", cons)
+                # for i in sorted(range(len(cons)), key=lambda i: vio[i], reverse=True)[:10]:
+                #     row = m.getRow(cons[i])
+                #     print(f"row {i} vio={vio[i]:.2e} rhs={cons[i].RHS:.3g}")
                 # print(m.objBound)
                 lb_ok = True
         # print(m.objBound)
@@ -369,7 +407,10 @@ def finalBQPModelv2(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax,
         if objBound-diskSum < 0 or objBound > 1.1 * diskSum:
             print(f"bound obj error with primal dual difference: {objBound-diskSum}")
         # print("b) return:", rss())
-        return adjustedDWA, max(objBound,diskSum), diskWeightsArray
+        if compensateConcat:
+            return adjustedDWA, max(objBound, diskSum+errorFuncWeight.X), diskWeightsArray, errorFuncWeight.X
+        else:
+            return adjustedDWA, max(objBound,diskSum), diskWeightsArray
 
     finally:
         # Ensure native memory is released
@@ -1807,7 +1848,7 @@ def readPointsetAndRunModelWith(fileLocation,testKey, overridingSetting=None):
                     inputParams["maxGamma"],
                     inputParams["maxDeg"],
                     listOfStichedSets,
-                    finalRun=True)
+                    compensateConcat=True)
     yeah = "yeah"
 
 
@@ -2394,8 +2435,10 @@ def quickJumpNavigator():
 if __name__ == '__main__':
     testPath = "TestResults_sequentialEdges_07_09_14-32.json"
     testKey = "TestNr0"
+    readPointsetAndRunModelWith(testPath, testKey,
+                               overridingSetting={"setLinks": 2})
     readPointsetAndRunDualWith(testPath, testKey,
-                                overridingSetting={"setLinks":3})
+                                overridingSetting={"setLinks":2})
     # gc.disable()
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",3:"uniformCoordinateWise",4:"compareToLowerBound"}
     testDim = 4
