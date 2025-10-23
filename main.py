@@ -979,7 +979,8 @@ def polyDiffBQPSetFinder(dim, lovaszCoef, indepCoef, nrOfPoints, rRes=1000,verif
 
 
 def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
-                                startingFacet=0, maxDryRun=-1, stopEarly=True, useRadialEstimator=True,combineBool=True):
+                                startingFacet=0, maxDryRun=-1, stopEarly=True, useRadialEstimator=True,combineBool=True,
+                                errorFuncCoef=0.0):
     scoreCategories = ["Times Tested", "Bad Scores", "Times Won (delivered)", "Times Won (random)",
                        "Goals (delivered)", "Goals (random)", "Scores (delivered)", "Scores (random)", "Scores (tie)"]
     pointSetSize = startingPointset.shape[0]
@@ -1014,6 +1015,10 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
     #                                    flattenedStartingGuess.reshape(shapeStartingGuess)[: dim] + 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
     #                                                                                        dim:])
     validIneqs, facetIneqs, betas = facetReader("bqp6.dat")
+    if errorFuncCoef != 0.0:
+        # errorFuncComp = errorFuncCoef*np.eye(pointSetSize, dtype=np.float64)
+        facetIneqTraces = np.trace(facetIneqs, axis1=-2,axis2=-1)
+        betas -= errorFuncCoef*facetIneqTraces
     recomplexify = lambda S: ((S.reshape(shapeStartingGuess)[:dim]-
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
