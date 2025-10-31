@@ -105,8 +105,7 @@ def finalBQPModel(forbiddenRadius, forbiddenAngle, complexDimension, gammaMax, k
     if listOfPointSets is None:
         listOfPointSets = []
         for pointsSetIdx in range(nrOfPointSets):
-            listOfPointSets.append(SphereBasics.createRandomPointsComplex(complexDimension, nrOfPoints,
-                                                                            baseZ=forbiddenZ)[0])
+            listOfPointSets.append(SphereBasics.createRandomPointsComplex(complexDimension, nrOfPoints,includeInner=False)[0])
     else:
         nrOfPointSets = len(listOfPointSets)
     # charMatricesList = []
@@ -587,7 +586,7 @@ def borderedPrimal(forbiddenRadius, forbiddenAngle, complexDimension, gammaBorde
     alpha = complexDimension - 2
     if kOnly:
         gammaMax = 0
-        kMax = np.max(kBorder)
+        kMax = int(np.max(kBorder))
         numK = kMax + 1
         numGamma = gammaMax + 1
         gammaBorder = np.zeros(1,dtype=int)
@@ -601,8 +600,8 @@ def borderedPrimal(forbiddenRadius, forbiddenAngle, complexDimension, gammaBorde
     else:
         kSet,gammaSet = paramSetFromBorder(kBorder, gammaBorder)
         # indicesList = [(kSet[paramIdx],gammaSet[paramIdx]) for paramIdx in range(kSet.size)]
-        gammaMax = np.max(gammaBorder)
-        kMax = np.max(kBorder)
+        gammaMax = int(np.max(gammaBorder))
+        kMax = int(np.max(kBorder))
         numK = kMax + 1
         numGamma = gammaMax + 1
         includedParamsArray = np.zeros((numGamma,numK),dtype=np.bool)
@@ -683,7 +682,7 @@ def borderedPrimal(forbiddenRadius, forbiddenAngle, complexDimension, gammaBorde
             m.setParam(GRB.Param.NumericFocus, 3)
         m.setParam(GRB.Param.Presolve, 0)
 
-        diskPolyWeights = m.addVars((numGamma,numK), vtype=GRB.SEMICONT, lb=0,ub=1, name="w")
+        diskPolyWeights = m.addVars(numGamma,numK, vtype=GRB.SEMICONT, lb=0,ub=1, name="w")
         m.addConstrs(diskPolyWeights[curGamma,curK] == 0
                      for curGamma in range(numGamma) for curK in range(numK) if not includedParamsArray[curGamma,curK])
 
@@ -695,7 +694,8 @@ def borderedPrimal(forbiddenRadius, forbiddenAngle, complexDimension, gammaBorde
         # Forbidden-IP constraint
         forbiddenInner = np.zeros((numGamma, numK))
         for g in range(numGamma):
-            forbiddenInner[g,:kMaxByGamma[g]+1] = diskPolysByGamma[g].calcAtRTheta(forbiddenRadius, forbiddenAngle)
+            forbiddenInner[g,:kMaxByGamma[g]+1] = diskPolysByGamma[g].calcAtRTheta(forbiddenRadius,
+                                                                                   forbiddenAngle)[:kMaxByGamma[g]+1]
         m.addConstr(gp.quicksum(forbiddenInner[curGamma, curK]*diskPolyWeights[curGamma, curK]
                                 for curGamma in range(numGamma) for curK in range(numK)
                                 if includedParamsArray[curGamma,curK])+betaForbidden == 0)
@@ -1188,7 +1188,7 @@ def polyDiffBQPSetFinder(dim, lovaszCoef, indepCoef, nrOfPoints, rRes=1000,verif
 
 def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                                 startingFacet=0, maxDryRun=-1, stopEarly=True, useRadialEstimator=True,combineBool=True,
-                                errorFuncCoef=0.0):
+                                errorFuncCoef=0.0,scoreFacets=False):
     scoreCategories = ["Times Tested", "Bad Scores", "Times Won (delivered)", "Times Won (random)",
                        "Goals (delivered)", "Goals (random)", "Scores (delivered)", "Scores (random)", "Scores (tie)"]
     pointSetSize = startingPointset.shape[0]
@@ -1222,11 +1222,13 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
     #                                                                             dim:]).T @ (
     #                                    flattenedStartingGuess.reshape(shapeStartingGuess)[: dim] + 1j * flattenedStartingGuess.reshape(shapeStartingGuess)[
     #                                                                                        dim:])
-    validIneqs, facetIneqs, betas = facetReader("bqp6.dat")
+    validIneqs, facetIneqs, betasv1 = facetReader("bqp6.dat")
     if errorFuncCoef != 0.0:
         # errorFuncComp = errorFuncCoef*np.eye(pointSetSize, dtype=np.float64)
         facetIneqTraces = np.trace(facetIneqs, axis1=-2,axis2=-1)
-        betas -= errorFuncCoef*facetIneqTraces
+        betas = betasv1-errorFuncCoef*facetIneqTraces
+    else:
+        betas = betasv1
     recomplexify = lambda S: ((S.reshape(shapeStartingGuess)[:dim]-
                                             1j*S.reshape(shapeStartingGuess)[dim:]).T @
                                                                     (S.reshape(shapeStartingGuess)[:dim]+
@@ -1246,8 +1248,8 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
     goalboard = {"delivered":0,"random":0}
     facetNr = 0
     goals = 0
+    nrOfFacets = betas.shape[0]
     if validIneqs:
-        nrOfFacets = betas.shape[0]
         facetIndices = np.arange(nrOfFacets)
         np.random.shuffle(facetIndices)
         if maxDryRun == -1:
@@ -1260,14 +1262,16 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             # facetIdx = -nrOfFacets + facetNr + startingFacet
             facetIdx = facetIndices[facetNr]
             idxStr = str(facetIdx)
-            facetScoreDF.at[scoreCategories[0], idxStr] += 1
+            if scoreFacets:
+
+                facetScoreDF.at[scoreCategories[0], idxStr] += 1
             objective = lambda S: betas[facetIdx] - np.sum(
                 np.multiply(facetIneqs[facetIdx],polyVals(S)))
             constraint = lambda S: np.sum(np.square(S.reshape(shapeStartingGuess)),axis=0)-1
 
             # relativeSizeV1 = np.sqrt(np.sum(np.abs(facetIneqs[facetIdx])))
             relativeSizeV1 = 1
-            currentCutOff = -0.5 * (-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2))
+            currentCutOff = -0.3 * (-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2))
 
             succesBase = False
             succesRand = False
@@ -1327,45 +1331,49 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             # if 1.3*(t1-t0)<t2-t1:
             #     x=1
             # input points as startingpoints
-            try:
-                # res = minimizationUnconstrained.run_from_flattened_start(
-                #     baseFlattenedStartingGuess, shapeStartingGuess, startingPolynomial, facetIneqs[facetIdx],
-                #     unconstrained_mode="normalize",  # or "stereo"
-                #     unconstrained_method="L-BFGS-B",  # or "trust-constr"
-                #     workers_trust_constr=10,  # if you later set >1, keep BLAS threads = 1
-                #     finite_diff_rel_step=1e-6,
-                #     gtol=1e-6, xtol=1e-12, maxiter=2000, verbose=0
-                # )
-                res, tau = minimizationUnconstrained.solve_facets_softmin(baseFlattenedStartingGuess, shapeStartingGuess,
-                                                                          startingPolynomial, facetIneqs, betas)
-                # res = improvedBQPNLP.solve_problem(baseFlattenedStartingGuess, shapeStartingGuess, startingPolynomial,
-                #                                        facetIneqs, facetIdx)
-                # res = scipy.optimize.minimize(
-                #     objective, baseFlattenedStartingGuess,
-                #     method='trust-constr',
-                #     constraints={'type': 'eq', 'fun': constraint},
-                #     tol=1e-8,
-                #     options={"maxiter":500}
-                # )
-            except:
-                succesBase = False
-            else:
-                relativeObjective = (res.fun+betas[facetIdx]) / relativeSizeV1 # / relativeSizes[facetIdx]
-                # print(f"suc{res.x},obj{relativeObjective}")
-                baseObj = relativeObjective
-                if relativeObjective < bestFacet: # and res.constr_violation < 1e-8:
-                    # baseSol = res.x.reshape(shapeStartingGuess)
-                    baseSol = minimizationUnconstrained.Z_from_unconstrained_normalize(res.x,n=dim,m=6)
-                    baseObj = relativeObjective
-                    succesBase = True
-                else:
-                    succesBase = False
+            # try:
+            #     # res = minimizationUnconstrained.run_from_flattened_start(
+            #     #     baseFlattenedStartingGuess, shapeStartingGuess, startingPolynomial, facetIneqs[facetIdx],
+            #     #     unconstrained_mode="normalize",  # or "stereo"
+            #     #     unconstrained_method="L-BFGS-B",  # or "trust-constr"
+            #     #     workers_trust_constr=10,  # if you later set >1, keep BLAS threads = 1
+            #     #     finite_diff_rel_step=1e-6,
+            #     #     gtol=1e-6, xtol=1e-12, maxiter=2000, verbose=0
+            #     # )
+            #     res, tau = minimizationUnconstrained.solve_facets_softmin(baseFlattenedStartingGuess, shapeStartingGuess,
+            #                                                               startingPolynomial, facetIneqs, betas)
+            #     # res = improvedBQPNLP.solve_problem(baseFlattenedStartingGuess, shapeStartingGuess, startingPolynomial,
+            #     #                                        facetIneqs, facetIdx)
+            #     # res = scipy.optimize.minimize(
+            #     #     objective, baseFlattenedStartingGuess,
+            #     #     method='trust-constr',
+            #     #     constraints={'type': 'eq', 'fun': constraint},
+            #     #     tol=1e-8,
+            #     #     options={"maxiter":500}
+            #     # )
+            # except:
+            #     succesBase = False
+            # else:
+            #     relativeObjective = (res.fun+betas[facetIdx]) / relativeSizeV1 # / relativeSizes[facetIdx]
+            #     # print(f"suc{res.x},obj{relativeObjective}")
+            #     baseObj = relativeObjective
+            #     if relativeObjective < bestFacet: # and res.constr_violation < 1e-8:
+            #         # baseSol = res.x.reshape(shapeStartingGuess)
+            #         baseSol = minimizationUnconstrained.Z_from_unconstrained_normalize(res.x,n=dim,m=6)
+            #         baseObj = relativeObjective
+            #         succesBase = True
+            #     else:
+            #         succesBase = False
 
             # Find best sol out of starting options
-            resObj = baseObj
-            resSol = baseSol
-            succesRes = succesBase
-            resType = "delivered"
+            resObj = randObj
+            resSol = randSol
+            succesRes = succesRand
+            resType = "random"
+            # resObj = baseObj
+            # resSol = baseSol
+            # succesRes = succesBase
+            # resType = "delivered"
 
             if succesRand:
                 if randObj < baseObj:
@@ -1373,18 +1381,19 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                     resSol = randSol
                     succesRes = succesRand
                     resType = "random"
-            if baseObj > 0 and randObj > 0:
-                scoreboard["bad"] += 1
-                facetScoreDF.at[scoreCategories[1], idxStr] += 1
-            elif baseObj < randObj:
-                scoreboard["delivered"] += 1
-                facetScoreDF.at[scoreCategories[6], idxStr] += 1
-            elif baseObj > randObj:
-                scoreboard["random"] += 1
-                facetScoreDF.at[scoreCategories[7], idxStr] += 1
-            else:
-                scoreboard["tie"] += 1
-                facetScoreDF.at[scoreCategories[8], idxStr] += 1
+            if scoreFacets:
+                if baseObj > 0 and randObj > 0:
+                    scoreboard["bad"] += 1
+                    facetScoreDF.at[scoreCategories[1], idxStr] += 1
+                elif baseObj < randObj:
+                    scoreboard["delivered"] += 1
+                    facetScoreDF.at[scoreCategories[6], idxStr] += 1
+                elif baseObj > randObj:
+                    scoreboard["random"] += 1
+                    facetScoreDF.at[scoreCategories[7], idxStr] += 1
+                else:
+                    scoreboard["tie"] += 1
+                    facetScoreDF.at[scoreCategories[8], idxStr] += 1
             # print(f"suc{succesRes},obj{resObj}")
             # Update best sol
             if succesRes:
@@ -1393,12 +1402,13 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                 bestFacet = resObj
                 sol = resSol
                 bestType = resType
-                goalboard[bestType] += 1
-                if bestType == "delivered":
-                    facetScoreDF.at[scoreCategories[4], idxStr] += 1
-                else:
-                    facetScoreDF.at[scoreCategories[5], idxStr] += 1
-                goals += 1
+                if scoreFacets:
+                    goalboard[bestType] += 1
+                    if bestType == "delivered":
+                        facetScoreDF.at[scoreCategories[4], idxStr] += 1
+                    else:
+                        facetScoreDF.at[scoreCategories[5], idxStr] += 1
+                    goals += 1
                 bestFacetIdx = idxStr
             else:
                 lastImprovement += 1
@@ -1407,16 +1417,19 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             if bestFacet < 0 and stopEarly:
                 if bestFacet < currentCutOff or lastImprovement >= maxDryRun:
                     break
-    Scoreboard.show_dashboard(scoreboard,goalboard,facetNr+validIneqs,goals)
-    print(f"Final winner: {bestType}")
-    # facetScoreDF.to_csv(facetFileLoc)
-    if bestFacet < 0:
-        if bestType == "delivered":
-            facetScoreDF.at[scoreCategories[2],bestFacetIdx] += 1
-        else:
-            facetScoreDF.at[scoreCategories[3], bestFacetIdx] += 1
+    if scoreFacets:
+        Scoreboard.show_dashboard(scoreboard,goalboard,facetNr+validIneqs,goals)
+        print(f"Final winner: {bestType}")
         # facetScoreDF.to_csv(facetFileLoc)
-        return True, sol.T, (facetIdx+1) % nrOfFacets
+        if bestFacet < 0:
+            if bestType == "delivered":
+                facetScoreDF.at[scoreCategories[2],bestFacetIdx] += 1
+            else:
+                facetScoreDF.at[scoreCategories[3], bestFacetIdx] += 1
+            # facetScoreDF.to_csv(facetFileLoc)
+            return True, sol.T, (facetIdx+1) % nrOfFacets
+    elif bestFacet < 0:
+        return True, sol.T, (facetIdx + 1) % nrOfFacets
     else:
         # facetScoreDF.to_csv(facetFileLoc)
         return False, startingGuess.T, (facetIdx+1) % nrOfFacets
@@ -1832,6 +1845,7 @@ def finalBQPMethod(dim, maxDeg=0, maxGamma=0, forbiddenRad=0, forbiddenTheta=0,
                   "input parameters": inputParameters}  # "resulting polynomials list":resultingpolyList,
     return outputDict
 
+
 def pointSetFromThetaSolAndDC(dim,coefsCurTheta,sizeOfBQPSet):
     thetaDisk = DiskCombi(dim - 2, coefsCurTheta)
     nrOfCoefs = coefsCurTheta.shape[1]
@@ -1915,7 +1929,7 @@ def pointSetFromThetaSolAndDC(dim,coefsCurTheta,sizeOfBQPSet):
             initPS[pointIdx, finalCoordinateIdx] = polar2z(foundRad, foundTheta)
             squaredRemainingRad -= np.square(foundRad)
             remainingRad = np.sqrt(squaredRemainingRad)
-    startingPS = initPS.dot(unitary_group(dim))
+    startingPS = initPS.dot(unitary_group.rvs(dim))
     return startingPS
 
 
@@ -1983,18 +1997,17 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001,
         elif compareToLowerBound:
             startingPS = pointSetFromThetaSolAndDC(dim,coefsCurTheta, sizeOfBQPSet)
         elif trulyUniformOnSphere:
-            initPS = SphereBasics.createRandomPointsComplex(dim,sizeOfBQPSet,includeInner=False)
-            startingPS = initPS.dot(unitary_group(dim))
+            initPS = SphereBasics.createRandomPointsComplex(dim,sizeOfBQPSet,includeInner=False)[0]
+            startingPS = initPS.dot(unitary_group.rvs(dim))
         else:
             # if none were true, also generate points uniformly random according to surface measure
-            initPS = SphereBasics.createRandomPointsComplex(dim, sizeOfBQPSet, includeInner=False)
-            startingPS = initPS.dot(unitary_group(dim))
+            initPS = SphereBasics.createRandomPointsComplex(dim, sizeOfBQPSet, includeInner=False)[0]
+            startingPS = initPS.dot(unitary_group.rvs(dim))
         if improvementWithFacets:
             (foundBool, ineqPointset,
              facetStart) = facetInequalityBQPGammaless(dim, startingPS,
-                                                       unscaledCoefsCurTheta,
-                                                       startingFacet=facetStart, stopEarly=True,
-                                                       errorFuncCoef=curErrorTerm)
+                                                       unscaledCoefsCurTheta, errorFuncCoef=curErrorTerm,
+                                                       startingFacet=facetStart, stopEarly=True)
             if foundBool:
                 psForModel = ineqPointset
             else:
@@ -2005,11 +2018,11 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001,
         pointSetsForModel = stitchSets(fullPointSets, setLinks)
         ipmsForModel = [curPS.dot(curPS.conj().T) for curPS in pointSetsForModel]
         uniqueValueArray = np.concat(ipmsForModel, axis=None)
-        curGammaBorder, curKBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
+        curKBorder,curGammaBorder  = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
         (coefsCurTheta, curObjVal,
          unscaledCoefsCurTheta, curErrorTerm) = borderedPrimal(forbiddenRad, forbiddenTheta, dim,
                                                                curGammaBorder, curKBorder,
-                                                                listOfPointSets=[pointSetsForModel], kOnly=allKOnly)
+                                                                listOfPointSets=pointSetsForModel, kOnly=allKOnly)
         if curObjVal > bestObjVal:
             print("Error, problem got worse with more sets")
         else:
@@ -2187,6 +2200,7 @@ def complex_to_json_safe(obj):
         return f"{obj.real}+ j*{obj.imag}"
     raise TypeError(f"Type {type(obj)} not serializable")
 
+
 def strToComp(s):
     m = _RX.match(s)
     if not m:
@@ -2259,7 +2273,6 @@ def runTestsPD(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount
                                     **argsTest)
         testResultDict = {f"TestNr{testNr}": testResult}
         save_test_result(testResultDict, testSaveLocation)
-        del testResult, testResultDict
     return
 
 
@@ -2818,11 +2831,23 @@ def borderBasedOnEpsilon(eps, comDim, ipmSet,kOnly=False):
     interestingIdx = nonZero*nonOne
     interestingVals = radiusSet[interestingIdx]
     if comDim == 2:
-        mainRad = interestingVals[np.argmax(np.abs(interestingVals-0.5))]
+        if len(interestingVals) == 0:
+            if np.any(nonOne):
+                mainRad = 0
+            else:
+                mainRad = 1-eps
+        else:
+            mainRad = interestingVals[np.argmax(np.abs(interestingVals-0.5))]
         maxK = np.ceil((((12/eps)**4)/(4*np.square(mainRad)*(1-np.square(mainRad)))-1)/2)
     else:
         # mainRad = np.max(interestingVals)
-        mainRad = np.sqrt(-(np.power(np.average(np.power(1-np.square(interestingVals),1-comDim/2)),1/(1-comDim/2))-1))
+        if len(interestingVals) == 0:
+            if np.any(nonOne):
+                mainRad = 0
+            else:
+                mainRad = 1 - eps
+        else:
+            mainRad = np.sqrt(-(np.power(np.average(np.power(1-np.square(interestingVals),1-comDim/2)),1/(1-comDim/2))-1))
         upperK = np.ceil(np.power(special.gamma(comDim-1)/eps, 1/(comDim-2)))/(np.sqrt(1-mainRad**2))
         interestedK = np.arange(upperK+1)
         interestedGamma = np.zeros_like(interestedK)
@@ -2833,7 +2858,7 @@ def borderBasedOnEpsilon(eps, comDim, ipmSet,kOnly=False):
         foundKBorder = np.array([maxK],dtype=int)
         foundGammaBorder = np.zeros_like(foundKBorder)
         return foundKBorder, foundGammaBorder
-    foundKBorder = np.arange(maxK+1)
+    foundKBorder = np.arange(maxK+1,dtype=int)
     foundGammaBorder = np.zeros_like(foundKBorder)
     kLeftToFind = np.ones_like(foundKBorder,dtype=np.bool)
     kLeftToFind[-1] = False
@@ -2879,14 +2904,14 @@ if __name__ == '__main__':
     testDim = 4
     testRad = 0.0
     testTheta = 0.0
-    nrOfTests = 2
-    bqpType = allTestTypes[2]
-    testArgsPD = {bqpType: True, "eps": 0.001, "sizeOfBQPSet": 6, "setAmount": 5, "setLinks": 2,
+    nrOfTests = 3
+    bqpType = allTestTypesPD[0]
+    testArgsPD = {bqpType: True, "eps": 0.001, "sizeOfBQPSet": 6, "setAmount": 2, "setLinks": 1,
                     "improvementWithFacets": True}
     runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
     # for setSize in range(2,testArgs["setLinks"]*testArgs["sizeOfBQPSet"]+1):
     #     charMatrixDict[setSize] = characteristicMatrix(setSize)
-    readOrInitFacetScores()
+    # readOrInitFacetScores()
     # testArgs = {bqpType: True, "maxDeg": 1500, "sizeOfBQPSet": 6, "setAmount": 5, "setLinks": 2,
     #             "improvementWithFacets": True}
     # runTests(testDim, testRad, testTheta, nrOfTests, testArgs, bqpType)

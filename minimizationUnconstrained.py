@@ -377,7 +377,7 @@ def solve_facets_softmin(flat_start, shapeStartingGuess, estimator_A, W_stack, b
         P0 = poly_from_gram_no_drift(G_re0, G_im0, estimator_A)
         s0 = b_vec - np.einsum('Kij,ij->K', W_stack, P0, optimize=True)
         rng = np.percentile(s0, 90) - np.percentile(s0, 10)
-        tau = max(1e-4, 0.05 * (rng if np.isfinite(rng) and rng > 0 else 1.0))
+        tau = max(3*1e-5, 0.015 * (rng if np.isfinite(rng) and rng > 0 else 1.0))
 
     res = minimize(
         objective_facets_softmin,
@@ -388,6 +388,7 @@ def solve_facets_softmin(flat_start, shapeStartingGuess, estimator_A, W_stack, b
         options=dict(maxiter=maxiter, ftol=ftol, maxls=50)
     )
     return res, tau
+
 
 def solve_unconstrained(params0_flat: np.ndarray,
                         n: int,
