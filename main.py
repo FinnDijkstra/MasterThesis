@@ -664,14 +664,14 @@ def borderedPrimal(forbiddenRadius, forbiddenAngle, complexDimension, gammaBorde
 
     try:
         m = gp.Model(env=env)
-        m.setParam("OutputFlag", 1)
-        m.setParam(GRB.Param.FeasibilityTol, 1e-8)
-        m.setParam(GRB.Param.BarConvTol, 1e-9)
+        m.setParam("OutputFlag", 0)
+        m.setParam(GRB.Param.FeasibilityTol, 1e-7)
+        m.setParam(GRB.Param.BarConvTol, 1e-7)
         # m.setParam(GRB.Param.BarQCPConvTol, 1e-9)
         # m.setParam(GRB.Param.MIPGap, 1e-9)
         # m.setParam(GRB.Param.IntFeasTol, 1e-9)
         # m.setParam(GRB.Param.PSDTol, 1e-9)
-        m.setParam(GRB.Param.OptimalityTol, 1e-8)
+        m.setParam(GRB.Param.OptimalityTol, 1e-7)
         m.setParam(GRB.Param.DualReductions, 0)
         # m.setParam(GRB.Param.Crossover, 2)
         m.setParam(GRB.Param.NonConvex, 2)
@@ -875,10 +875,6 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         np.fill_diagonal(identityMatrix, 1.0)
         listOfIdentityMatrices[psIdx] = identityMatrix
 
-    # kMaxByGamma = np.zeros(gammaMax+1)
-    # for curGamma in range(gammaMax+1):
-    #     kMaxByGamma[curGamma] = np.max(includedParamsArray,axis=0)
-    #     kMaxByGamma[curGamma] = np.max(kSet[np.where(gammaSet == curGamma)])
     diskPolysByGamma = [Disk(alpha, g, kMaxByGamma[g]) for g in range(gammaMax+1)]
 
     # ---- Gurobi in short-lived env ----
@@ -888,20 +884,10 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
 
     try:
         m = gp.Model(env=env)
-        m.setParam("OutputFlag", 1)
-        # m.setParam(GRB.Param.FeasibilityTol, 1e-8)
-        # m.setParam(GRB.Param.BarConvTol, 1e-9)
-        # m.setParam(GRB.Param.BarQCPConvTol, 1e-9)
-        # m.setParam(GRB.Param.MIPGap, 1e-9)
-        # m.setParam(GRB.Param.IntFeasTol, 1e-9)
-        # m.setParam(GRB.Param.PSDTol, 1e-9)
-        # m.setParam(GRB.Param.OptimalityTol, 1e-8)
-        # m.setParam(GRB.Param.DualReductions, 0)
-        # m.setParam(GRB.Param.Crossover, 2)
+        m.setParam("OutputFlag", 0)
+
         m.setParam(GRB.Param.NonConvex, 0)
-        # m.setParam(GRB.Param.Method, 2)
-        # m.setParam(GRB.Param.BarHomogeneous, 1)
-        # m.setParam(GRB.Param.ScaleFlag,0)
+
         if finalRun:
             m.setParam(GRB.Param.NumericFocus, 3)
         m.setParam(GRB.Param.Presolve, 0)
@@ -919,9 +905,7 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         m.addConstr(forbiddenMuAbs >= -forbiddenMuVal, name=f"AbsMuForbidden")
         m.addConstr(forbiddenMuAbs >= forbiddenMuVal, name=f"AbsMuForbidden")
 
-        # m.addConstr(forbiddenMuVal == forbiddenMuPlus - forbiddenMuMin, name=f"ValMuForbidden")
-        # muPlusDictOfVars = {}
-        # muMinDictOfVars = {}
+
         muAbsDictOfVars = {}
         muValDictOfVars = {}
         psSizes = {}
@@ -930,27 +914,21 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
             nuVar = m.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"nu{psIdx}")
             n = ipm.shape[0]
             psSizes[psIdx] = n
-            # muPlus = m.addVars(n, n, lb=0.0, name=f"MuPlusForSet{psIdx}")
-            # muMin = m.addVars(n, n, lb=0.0, name=f"MuMinForSet{psIdx}")
+
 
             # Optional: signed value mu = muPlus - muMin
             muVal = m.addVars(n, n, lb=-float('inf'), name=f"MuValForSet{psIdx}")
-            # m.addConstrs((muVal[idx1,idx2] == muPlus[idx1,idx2] - muMin[idx1,idx2]
-            #               for idx1 in range(n) for idx2 in range(n)), name=f"MuSigned_{psIdx}")
+
             charMat = characteristicMatrix(n)
             nrOfSubsets = charMat.shape[1]
             for curSubsetIdx in range(nrOfSubsets):
                 subsetPoints = np.nonzero(charMat[:,curSubsetIdx])[0]
                 m.addConstr(nuVar-gp.quicksum(muVal[idx1,idx2] for idx1 in subsetPoints for idx2 in subsetPoints)>=0)
 
-            # Absolute-with-diagonal-exception:
-            # off-diag: muAbs = muPlus + muMin
-            # diag:     muAbs = muPlus - muMin
+
             muAbs = m.addVars(n, n, lb=0, name=f"MuAbsForSet{psIdx}")
             M = np.ones((n, n))
-            np.fill_diagonal(M, -1.0)  # +1 off-diag, -1 on diag
-            # The trick is that this makes offdiagonals of |mu_uv| and diagonals of -mu_vv such that the
-            # constraint for compensating the concatenation is z_2-<EPS(V,V),MU_abs>=z_2-eps_uv|mu_uv| +eps_vv mu_vv
+            np.fill_diagonal(M, -1.0)
             m.addConstrs((muAbs[idx1,idx2] >= muVal[idx1,idx2]
                           for idx1 in range(n) for idx2 in range(n)), name=f"AbsMix_{psIdx}")
             m.addConstrs((muAbs[idx1, idx2] >= -muVal[idx1, idx2]
@@ -1000,8 +978,7 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
                                 + gp.quicksum(gp.quicksum(listOfIdentityMatrices[i][idx1,idx1] * muValDictOfVars[i][idx1,idx1]
                                                for idx1 in range(psSizes[i]))
                                                 for i in range(nrOfPointSets)) >= 1)
-        # objExpression = z1Var + gp.quicksum((muValDictOfVars[i]).sum()
-        #                            for i in range(nrOfPointSets))
+
         objExpression = z1Var + sum(curNuVar for curNuVar in nuVarDict.values())
         m.setObjective(objExpression, GRB.MINIMIZE)
 
@@ -1011,8 +988,7 @@ def concatDual(forbiddenRadius, forbiddenAngle, complexDimension, kBorder, gamma
         looseningFactor = 1.1
         tryNumber = 1
         while not lb_ok:
-            # lb = m.addConstr(diskPolyWeights.sum() >= (0.5)**p)
-            # ub = m.addConstr(objExpression <= ubVal*(looseningFactor**tryNumber))
+
             m.update()
             m.optimize()
             # m.computeIIS()
@@ -1933,11 +1909,13 @@ def pointSetFromThetaSolAndDC(dim,coefsCurTheta,sizeOfBQPSet):
     return startingPS
 
 
-def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001,
+def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsDual=0.0,
                             sizeOfBQPSet=6, setAmount=5, setLinks=1,
                             uniformCoordinateWise=False,
                             compareToLowerBound=False, trulyUniformOnSphere=False, improvementWithFacets=False):
     # Make sure all correct information is available
+    if epsDual == 0.0:
+        epsDual = eps
     if forbiddenRad == 0.0:
         allKOnly = True
     else:
@@ -1959,15 +1937,16 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001,
 
     # Run once to get a baseline
     if forbiddenRad < 1:
-        curKBorder,curGammaBorder = borderBasedOnEpsilon(eps,dim,np.array([forbiddenZ]),allKOnly)
+        uniqueValueArray = np.array([forbiddenZ])
     else:
-        curKBorder,curGammaBorder = borderBasedOnEpsilon(eps, dim, np.array([0.99]), allKOnly)
+        uniqueValueArray = np.array([0.99])
+    curKBorder, curGammaBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
     (coefsThetav0, bestObjVal,
      unscaledcoefsThetav0,curErrorTerm) = borderedPrimal(forbiddenRad, forbiddenTheta, dim, curGammaBorder, curKBorder,
                                                                     listOfPointSets=pointSetsForModel,kOnly=allKOnly)
     # Disk poly from baseline
     # diskPolyBQPLess = DiskCombi(dim-2,unscaledcoefsThetav0)
-
+    print(f"Base obj value: {bestObjVal}")
     # Initialize the lists for BQP sets, disk polynomials and their coefficients in both normalizations
     fullPointSets = []
     coefThetaList = [coefsThetav0]
@@ -2018,7 +1997,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001,
         pointSetsForModel = stitchSets(fullPointSets, setLinks)
         ipmsForModel = [curPS.dot(curPS.conj().T) for curPS in pointSetsForModel]
         uniqueValueArray = np.concat(ipmsForModel, axis=None)
-        curKBorder,curGammaBorder  = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
+        curKBorder,curGammaBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
         (coefsCurTheta, curObjVal,
          unscaledCoefsCurTheta, curErrorTerm) = borderedPrimal(forbiddenRad, forbiddenTheta, dim,
                                                                curGammaBorder, curKBorder,
@@ -2028,11 +2007,13 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001,
         else:
             bestObjVal = curObjVal
         coefThetaList.append(coefsCurTheta)
+        print(f"Found obj value iter {setIdx}: {curObjVal} (best {bestObjVal})")
         unscaledCoefThetaList.append(unscaledCoefsCurTheta)
     print("Primal found all pointsets, running Dual for final value")
+    curKBorder, curGammaBorder = borderBasedOnEpsilon(epsDual, dim, uniqueValueArray, allKOnly)
     finalObj = concatDual(forbiddenRad,forbiddenTheta,dim,
                           curKBorder,curGammaBorder,listOfPointSets=pointSetsForModel,kOnly=allKOnly)
-
+    print(f"Final (dual) obj value: {finalObj}")
 
     inputParameters = {"dim": dim, "eps": eps,
                        "forbiddenRad":forbiddenRad,"forbiddenTheta":forbiddenTheta,
@@ -2263,7 +2244,14 @@ def runTestsv2(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount
 
 
 def runTestsPD(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
-    testSaveLocation = f"TestResults_{testType}_" + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json"
+    facetImprBool = argsTest["improvementWithFacets"]
+    if facetImprBool:
+        testSaveLocation = (f"TestResults/TestResults_Facet_{testType}_C{testComplexDimension}"+
+                            f"_r{forbiddenRadius:.2f}_t{forbiddenAngle:.2f}"
+                            + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json")
+    else:
+        testSaveLocation = (f"TestResults/TestResults_{testType}_C{testComplexDimension}_"
+                            + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json")
     if not os.path.exists(testSaveLocation):
         with open(testSaveLocation, "w") as f:
             json.dump({}, f)
@@ -2901,13 +2889,69 @@ if __name__ == '__main__':
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",
                     3:"uniformCoordinateWise",4:"compareToLowerBound"}
     allTestTypesPD = {0:"trulyUniformOnSphere",1: "uniformCoordinateWise", 2: "compareToLowerBound"}
-    testDim = 4
+    testDim = 3
     testRad = 0.0
     testTheta = 0.0
-    nrOfTests = 3
+    nrOfTests = 1
+    # bqpType = allTestTypesPD[0]
+    #
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #                 "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[0]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[1]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    bqpType = allTestTypesPD[2]
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    testDim = 4
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": True}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
     bqpType = allTestTypesPD[0]
-    testArgsPD = {bqpType: True, "eps": 0.001, "sizeOfBQPSet": 6, "setAmount": 2, "setLinks": 1,
-                    "improvementWithFacets": True}
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    bqpType = allTestTypesPD[1]
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    bqpType = allTestTypesPD[2]
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    testDim = 5
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": True}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    bqpType = allTestTypesPD[0]
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    bqpType = allTestTypesPD[1]
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    bqpType = allTestTypesPD[2]
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+                  "improvementWithFacets": False}
     runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
     # for setSize in range(2,testArgs["setLinks"]*testArgs["sizeOfBQPSet"]+1):
     #     charMatrixDict[setSize] = characteristicMatrix(setSize)
