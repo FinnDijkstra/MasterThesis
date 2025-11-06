@@ -2904,72 +2904,82 @@ if __name__ == '__main__':
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",
                     3:"uniformCoordinateWise",4:"compareToLowerBound"}
     allTestTypesPD = {0:"trulyUniformOnSphere",1: "uniformCoordinateWise", 2: "compareToLowerBound"}
-    testDim = 6
-    testRad = 0.0
-    testTheta = 0.0
-    nrOfTests = 2
+    testDim = 3
+    testRadArray = np.linspace(1.0/26,1,25)
+    testThetaArray = np.pi-np.linspace(0,np.pi,21,endpoint=True)
+
+
+    # testRad = 0.0
+    # testTheta = 0.0
+    nrOfTests = 1
     bqpType = allTestTypesPD[0]
-
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                    "improvementWithFacets": True}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[0]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[1]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[2]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    testDim = 7
-    bqpType = allTestTypesPD[0]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": True}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[0]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[1]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[2]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    testDim = 8
-    bqpType = allTestTypesPD[0]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": True}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[0]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[1]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-
-    bqpType = allTestTypesPD[2]
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    for testRad in testRadArray:
+        for testTheta in testThetaArray:
+            testArgsPD = {bqpType: True, "eps": 0.003, "epsDual": 0.001, "sizeOfBQPSet": 10, "setAmount": 1,
+                          "setLinks": 1,
+                            "improvementWithFacets": False}
+            runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #                 "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[0]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[1]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[2]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 7
+    # bqpType = allTestTypesPD[0]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[0]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[1]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[2]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 8
+    # bqpType = allTestTypesPD[0]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[0]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[1]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[2]
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
     #
     # testDim = 3
     # bqpType = allTestTypesPD[1]
