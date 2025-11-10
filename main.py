@@ -2259,10 +2259,11 @@ def runTestsPD(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount
     facetImprBool = argsTest["improvementWithFacets"]
     if facetImprBool:
         testSaveLocation = (f"TestResults/TestResults_Facet_{testType}_C{testComplexDimension}"+
-                            f"_r{forbiddenRadius:.2f}_t{forbiddenAngle:.2f}"
+                            f"_r{forbiddenRadius:.2f}_t{forbiddenAngle:.2f}_"
                             + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json")
     else:
-        testSaveLocation = (f"TestResults/TestResults_{testType}_C{testComplexDimension}_"
+        testSaveLocation = (f"TestResults/TestResults_{testType}_C{testComplexDimension}_"+
+                            f"_r{forbiddenRadius:.2f}_t{forbiddenAngle:.2f}_"
                             + datetime.datetime.now().strftime("%d_%m_%H-%M") + ".json")
     if not os.path.exists(testSaveLocation):
         with open(testSaveLocation, "w") as f:
@@ -2904,7 +2905,7 @@ if __name__ == '__main__':
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",
                     3:"uniformCoordinateWise",4:"compareToLowerBound"}
     allTestTypesPD = {0:"trulyUniformOnSphere",1: "uniformCoordinateWise", 2: "compareToLowerBound"}
-    testDim = 3
+    testDim = 4
     testRadArray = np.linspace(1.0/26,1,25)
     testThetaArray = np.pi-np.linspace(0,np.pi,21,endpoint=True)
 
@@ -2915,9 +2916,9 @@ if __name__ == '__main__':
     bqpType = allTestTypesPD[0]
     for testRad in testRadArray:
         for testTheta in testThetaArray:
-            testArgsPD = {bqpType: True, "eps": 0.003, "epsDual": 0.001, "sizeOfBQPSet": 10, "setAmount": 1,
+            testArgsPD = {bqpType: True, "eps": 0.01, "epsDual": 0.01, "sizeOfBQPSet": 10, "setAmount": 1,
                           "setLinks": 1,
-                            "improvementWithFacets": False}
+                            "improvementWithFacets": True}
             runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
     #
     # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
