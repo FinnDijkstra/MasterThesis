@@ -2764,7 +2764,10 @@ def superBound(radiusArray,comDim,kArrayShaped,gammaArrayShaped, perParamaterBoo
     # gammaMesh, boundRadMesh = np.meshgrid(gammaArray, boundRadii)
     # kMesh, boundRadMesh = np.meshgrid(kArray, boundRadii)
     # find M such that r^{M} outgrows jacobi bound
-    bigNgammaStupid = stupidBigN(kArray, customRadii)
+    ParamMaskKStupid = (kArray <= 100)
+    notParamMaskKStupidMesh = (kMesh > 100)
+    workAroundKArray = np.multiply(kArray,ParamMaskKStupid)
+    bigNgammaStupid = stupidBigN(workAroundKArray, customRadii)
     comDimMesh = (comDim - 2) * np.ones_like(bigNgammaStupid)
     if kOnly:
         gammaEvalMeshStupid = np.zeros_like(gammaMesh)
@@ -2774,8 +2777,9 @@ def superBound(radiusArray,comDim,kArrayShaped,gammaArrayShaped, perParamaterBoo
 
     # calc r^{M}* max(P_k^{n-2,M}(-1), P_k^{n-2,M}(1))
     lgStupid = (gammaEvalMeshStupid*np.log(customBoundRadMesh)-loggamma(comDim - 1 + kMesh) +
-          loggamma(kMesh + gammaPochMeshStupid + 1) + loggamma(comDim - 1)
-          - loggamma(gammaPochMeshStupid + 1))
+                loggamma(kMesh + gammaPochMeshStupid + 1) + loggamma(comDim - 1)
+                - loggamma(gammaPochMeshStupid + 1))
+    lgStupid[notParamMaskKStupidMesh] = 1.0
     # poch_ratio = np.exp(lg)
     # radPowered = np.power(boundRadMesh, gammaEvalMesh)
     # foundBounds = poch_ratio * radPowered
@@ -2905,7 +2909,7 @@ if __name__ == '__main__':
     allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",
                     3:"uniformCoordinateWise",4:"compareToLowerBound"}
     allTestTypesPD = {0:"trulyUniformOnSphere",1: "uniformCoordinateWise", 2: "compareToLowerBound"}
-    testDim = 4
+    testDim = 3
     testRadArray = np.linspace(1.0/26,1,25)
     testThetaArray = np.pi-np.linspace(0,np.pi,21,endpoint=True)
 
@@ -2916,7 +2920,7 @@ if __name__ == '__main__':
     bqpType = allTestTypesPD[0]
     for testRad in testRadArray:
         for testTheta in testThetaArray:
-            testArgsPD = {bqpType: True, "eps": 0.01, "epsDual": 0.01, "sizeOfBQPSet": 10, "setAmount": 1,
+            testArgsPD = {bqpType: True, "eps": 0.03, "epsDual": 0.03, "sizeOfBQPSet": 6, "setAmount": 1,
                           "setLinks": 1,
                             "improvementWithFacets": True}
             runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
