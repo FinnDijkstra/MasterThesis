@@ -1962,6 +1962,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
     fullPointSets = []
     coefThetaList = [coefsThetav0]
     unscaledCoefThetaList = [unscaledcoefsThetav0]
+    objectiveValues = {"initPrimal":bestObjVal}
 
     # Set counters to start
     facetStart = 0
@@ -2014,6 +2015,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
          unscaledCoefsCurTheta, curErrorTerm) = borderedPrimal(forbiddenRad, forbiddenTheta, dim,
                                                                curGammaBorder, curKBorder,
                                                                 listOfPointSets=pointSetsForModel, kOnly=allKOnly)
+        objectiveValues[f"Primal {setIdx} objective"] = curObjVal
         if curObjVal > bestObjVal:
             print("Error, problem got worse with more sets")
         else:
@@ -2026,7 +2028,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
     finalObj = concatDual(forbiddenRad,forbiddenTheta,dim,
                           curKBorder,curGammaBorder,listOfPointSets=pointSetsForModel,kOnly=allKOnly)
     print(f"Final (dual) obj value: {finalObj}")
-
+    objectiveValues["Dual objective"] = finalObj
     inputParameters = {"dim": dim, "eps": eps,
                        "forbiddenRad":forbiddenRad,"forbiddenTheta":forbiddenTheta,
                        "sizeOfBQPSet":sizeOfBQPSet, "setAmount":setAmount, "setLinks":setLinks,
@@ -2037,7 +2039,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
     usedPointSetDict = {f"point set {setNr}": fullPointSets[setNr].tolist() for setNr in range(len(fullPointSets))}
     # coefsThetaListsList = [coefArray.tolist() for coefArray in coefThetaList]
     # unscaledCoefsThetaListsList = [coefArray.tolist() for coefArray in unscaledCoefThetaList]
-    outputDict = {"objective": finalObj,
+    outputDict = {"objective values": objectiveValues,
                   "used point sets": usedPointSetDict,
                   "input parameters": inputParameters}  # "resulting polynomials list":resultingpolyList,
     return outputDict
