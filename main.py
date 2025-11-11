@@ -1170,7 +1170,7 @@ def polyDiffBQPSetFinder(dim, lovaszCoef, indepCoef, nrOfPoints, rRes=1000,verif
 
 def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
                                 startingFacet=0, maxDryRun=-1, stopEarly=True, useRadialEstimator=True,combineBool=True,
-                                errorFuncCoef=0.0,scoreFacets=False):
+                                errorFuncCoef=0.0,scoreFacets=False, compareToLowerBound=False):
     scoreCategories = ["Times Tested", "Bad Scores", "Times Won (delivered)", "Times Won (random)",
                        "Goals (delivered)", "Goals (random)", "Scores (delivered)", "Scores (random)", "Scores (tie)"]
     pointSetSize = startingPointset.shape[0]
@@ -1238,7 +1238,10 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
             maxDryRun = nrOfFacets
         # relativeSizes = np.max(np.max(np.abs(facetIneqs),axis=1), axis=1)
         for facetNr in range(nrOfFacets):
-            startingLocations = createRandomPointsComplex(dim,6, includeInner=False)[0]
+            if compareToLowerBound:
+                startingLocations = pointSetFromThetaSolAndDC(dim, startingCoefficients, 6)
+            else:
+                startingLocations = createRandomPointsComplex(dim,6, includeInner=False)[0]
             startingGuess = np.concat([startingLocations.T.real, startingLocations.T.imag])
             flattenedStartingGuess = startingGuess.ravel()
             # facetIdx = -nrOfFacets + facetNr + startingFacet
@@ -1998,7 +2001,8 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
             (foundBool, ineqPointset,
              facetStart) = facetInequalityBQPGammaless(dim, startingPS,
                                                        unscaledCoefsCurTheta, errorFuncCoef=curErrorTerm,
-                                                       startingFacet=facetStart, stopEarly=True)
+                                                       startingFacet=facetStart, stopEarly=True,
+                                                       compareToLowerBound=compareToLowerBound)
             if foundBool:
                 psForModel = ineqPointset
             else:
