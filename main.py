@@ -2277,6 +2277,38 @@ def runTestsv2(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount
     return
 
 
+def runTestsPDNoSave(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
+    """
+    Run testAmount tests for a single (radius, angle) combination.
+
+    Returns a list of dicts with the per-test results.
+    """
+    results = []
+    for testNr in range(testAmount):
+        testResult = primalStartDualFinish(
+            testComplexDimension,
+            forbiddenRad=forbiddenRadius,
+            forbiddenTheta=forbiddenAngle,
+            **argsTest
+        )
+
+        obj_vals = testResult["objective values"]
+        init_primal = obj_vals["initPrimal"]
+        dual_obj = obj_vals["Dual objective"]
+
+        results.append({
+            "radius": forbiddenRadius,
+            "theta": forbiddenAngle,
+            "test_nr": testNr,
+            "initPrimal": init_primal,
+            "dualObj": dual_obj,
+            "testType": testType,
+            "dim": testComplexDimension,
+        })
+
+    return results
+
+
 def runTestsPD(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
     facetImprBool = argsTest["improvementWithFacets"]
     if facetImprBool:
@@ -2297,6 +2329,125 @@ def runTestsPD(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount
         testResultDict = {f"TestNr{testNr}": testResult}
         save_test_result(testResultDict, testSaveLocation)
     return
+
+
+def run_PD_grid_to_excel(
+    testDim,
+    testRadArray,
+    testThetaArray,
+    nrOfTests,
+    bqpType,
+    eps,
+    epsDual,
+    sizeOfBQPSet,
+    setAmount,
+    setLinks,
+    improvementWithFacets,
+    output_dir="TestResults",
+):
+    """
+    Run primalStartDualFinish via runTestsPD on a grid of (radius, theta),
+    aggregate the results and write them to an Excel file with two sheets.
+
+    Parameters
+    ----------
+    testDim : int
+        Complex dimension.
+    testRadArray : array-like
+        Iterable of radii to test.
+    testThetaArray : array-like
+        Iterable of angles to test.
+    nrOfTests : int
+        Number of random tests per (radius, theta) combination.
+    bqpType : str
+        One of "trulyUniformOnSphere", "uniformCoordinateWise", "compareToLowerBound".
+    eps : float
+    epsDual : float
+    sizeOfBQPSet : int
+    setAmount : int
+    setLinks : int
+    improvementWithFacets : bool
+    output_dir : str, optional
+        Directory to place the Excel file into.
+
+    Returns
+    -------
+    excel_path : str
+        Path to the written Excel file.
+    df_summary : pandas.DataFrame
+        Per (radius, theta) summary (max initPrimal, min dualObj).
+    df_per_test : pandas.DataFrame
+        Per (radius, theta) per-test values (initPrimal_test*, dualObj_test*).
+    """
+
+    all_results = []
+
+    for testRad in testRadArray:
+        for testTheta in testThetaArray:
+            testArgsPD = {
+                bqpType: True,
+                "eps": eps,
+                "epsDual": epsDual,
+                "sizeOfBQPSet": sizeOfBQPSet,
+                "setAmount": setAmount,
+                "setLinks": setLinks,
+                "improvementWithFacets": improvementWithFacets,
+            }
+
+            cur_results = runTestsPDNoSave(
+                                                testDim,
+                                                testRad,
+                                                testTheta,
+                                                nrOfTests,
+                                                testArgsPD,
+                                                bqpType
+                                            )
+            all_results.extend(cur_results)
+
+    # Turn into DataFrame
+    df = pd.DataFrame(all_results)
+
+    # ---------- Sheet 1: max starting objective / min dual per (radius, theta) ----------
+    df_summary = (
+        df.groupby(["radius", "theta"], as_index=False)
+          .agg(
+              max_starting_objective=("initPrimal", "max"),
+              min_dual_objective=("dualObj", "min"),
+          )
+    )
+
+    # ---------- Sheet 2: per-test values per (radius, theta) ----------
+    init_wide = df.pivot(index=["radius", "theta"], columns="test_nr", values="initPrimal")
+    dual_wide = df.pivot(index=["radius", "theta"], columns="test_nr", values="dualObj")
+
+    second_data = {}
+    for col in init_wide.columns:
+        second_data[f"initPrimal_test{col}"] = init_wide[col]
+        second_data[f"dualObj_test{col}"] = dual_wide[col]
+
+    df_per_test = pd.DataFrame(second_data, index=init_wide.index).reset_index()
+
+    # ---------- Write to Excel ----------
+    os.makedirs(output_dir, exist_ok=True)
+
+    rad_min = float(np.min(testRadArray))
+    rad_max = float(np.max(testRadArray))
+    theta_min = float(np.min(testThetaArray))
+    theta_max = float(np.max(testThetaArray))
+
+    excel_path = os.path.join(
+        output_dir,
+        f"PD_{bqpType}_C{testDim}_"
+        f"r{rad_min:.2f}-{rad_max:.2f}_"
+        f"t{theta_min:.2f}-{theta_max:.2f}_"
+        f"{datetime.datetime.now().strftime('%d_%m_%H-%M')}.xlsx",
+    )
+
+    with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="summary", index=False)
+        df_per_test.to_excel(writer, sheet_name="per_test", index=False)
+
+    return excel_path, df_summary, df_per_test
 
 
 def readPointsetAndRunModelWith(fileLocation,testKey, overridingSetting=None):
@@ -2933,8 +3084,8 @@ def quickJumpNavigator():
 
 
 
-
-if __name__ == '__main__':
+#    allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",
+#                    3:"uniformCoordinateWise",4:"compareToLowerBound"}
     # testPath = "TestResults_sequentialEdges_07_09_14-32.json"
     # testKey = "TestNr0"
     # readPointsetAndRunModelWith(testPath, testKey,
@@ -2942,25 +3093,41 @@ if __name__ == '__main__':
     # readPointsetAndRunDualWith(testPath, testKey,
     #                             overridingSetting={"setLinks":2})
     # gc.disable()
-    allTestTypes = {0:"reverseWeighted",1:"spreadPoints",2:"sequentialEdges",
-                    3:"uniformCoordinateWise",4:"compareToLowerBound"}
+if __name__ == '__main__':
+
+
     allTestTypesPD = {0:"trulyUniformOnSphere",1: "uniformCoordinateWise", 2: "compareToLowerBound"}
-    testDim = 3
-    testRadArray = np.linspace(23.0/26,1,3,endpoint=False)
-    testThetaArray = np.pi-np.linspace(0,np.pi,21,endpoint=True)
+    testDim = 5
+    testRadArray = np.linspace(1.0/6,1,5,endpoint=False)
+    testThetaArray = np.pi-np.linspace(0,np.pi,6,endpoint=True)
 
 
-    testRad = 0.0
-    testTheta = 0.0
-    nrOfTests = 3
-    bqpType = allTestTypesPD[2]
+
+    nrOfTests = 2
+    bqpType = allTestTypesPD[0]
+    run_PD_grid_to_excel(
+        testDim=testDim,
+        testRadArray=testRadArray,
+        testThetaArray=testThetaArray,
+        nrOfTests=nrOfTests,
+        bqpType=bqpType,
+        eps=0.003,
+        epsDual=0.003,
+        sizeOfBQPSet=6,
+        setAmount=1,
+        setLinks=1,
+        improvementWithFacets=False,
+        output_dir="TestResults",
+    )
     # for testRad in testRadArray:
     #     for testTheta in testThetaArray:
     #         testArgsPD = {bqpType: True, "eps": 0.003, "epsDual": 0.003, "sizeOfBQPSet": 12, "setAmount": 1,
     #                       "setLinks": 1,
     #                         "improvementWithFacets": False}
     #         runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
-    #
+
+    testRad = 0.0
+    testTheta = 0.0
     testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.001,"sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
                     "improvementWithFacets": False}
     runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
