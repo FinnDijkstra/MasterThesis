@@ -1053,7 +1053,11 @@ def c_k(n: int, k: int) -> float:
     poch_ratio = np.exp(lg)
 
     pref = 2.0 ** ( -2* (n -1)) * ((2 * k + n - 1) / (n - 1)) ** 1.0
-    return float(pref * ((poch_ratio**2) * (H **2) ))
+    returnVal = float(pref * ((poch_ratio**2) * (H **2) ))
+    if math.isnan(returnVal):
+        return 0
+    else:
+        return returnVal
 
 
 def c_coeffs(n: int, K: int) -> np.ndarray:
@@ -1955,6 +1959,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
     else:
         uniqueValueArray = np.array([0.99])
     curKBorder, curGammaBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
+    totalPolynomials = np.sum(curGammaBorder)
     (coefsThetav0, bestObjVal,
      unscaledcoefsThetav0,curErrorTerm) = borderedPrimal(forbiddenRad, forbiddenTheta, dim, curGammaBorder, curKBorder,
                                                                     listOfPointSets=pointSetsForModel,kOnly=allKOnly)
@@ -2014,7 +2019,12 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
         # ipmsForModel = [curPS.dot(curPS.conj().T) for curPS in pointSetsForModel]
         ipmsForModel = listMatrixDot(pointSetsForModel)
         uniqueValueArray = np.concat(ipmsForModel, axis=None)
-        curKBorder,curGammaBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
+        candidateKBorder,candidateGammaBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
+        candidateTotalPolynomials = np.sum(candidateGammaBorder)
+        if candidateTotalPolynomials >= totalPolynomials:
+            totalPolynomials = candidateTotalPolynomials
+            curGammaBorder = candidateGammaBorder
+            curKBorder = candidateKBorder
         (coefsCurTheta, curObjVal,
          unscaledCoefsCurTheta, curErrorTerm) = borderedPrimal(forbiddenRad, forbiddenTheta, dim,
                                                                curGammaBorder, curKBorder,
@@ -2028,7 +2038,13 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
         print(f"Found obj value iter {setIdx}: {curObjVal} (best {bestObjVal})")
         unscaledCoefThetaList.append(unscaledCoefsCurTheta)
     print("Primal found all pointsets, running Dual for final value")
-    curKBorder, curGammaBorder = borderBasedOnEpsilon(epsDual, dim, uniqueValueArray, allKOnly)
+    # curKBorder, curGammaBorder = borderBasedOnEpsilon(epsDual, dim, uniqueValueArray, allKOnly)
+    candidateKBorder, candidateGammaBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
+    candidateTotalPolynomials = np.sum(candidateGammaBorder)
+    if candidateTotalPolynomials >= totalPolynomials:
+        totalPolynomials = candidateTotalPolynomials
+        curGammaBorder = candidateGammaBorder
+        curKBorder = candidateKBorder
     finalObj = concatDual(forbiddenRad,forbiddenTheta,dim,
                           curKBorder,curGammaBorder,listOfPointSets=pointSetsForModel,kOnly=allKOnly)
     print(f"Final (dual) obj value: {finalObj}")
@@ -2877,8 +2893,9 @@ def borderBasedOnEpsilon(eps, comDim, ipmSet,kOnly=False):
     kLeftToFind = np.ones_like(foundKBorder,dtype=np.bool)
     kLeftToFind[-1] = False
     # curGammaIdx = 0
-    gammaStepSize = math.ceil(100000.0/maxK)
+    gammaStepSize = math.ceil(20000.0/maxK)
     checkingGamma = np.arange(gammaStepSize)
+    loopNr = 0
     while np.any(kLeftToFind):
         checkingK = foundKBorder[kLeftToFind]
         checkKMesh,checkGammaMesh = np.meshgrid(checkingK,checkingGamma)
@@ -2892,8 +2909,21 @@ def borderBasedOnEpsilon(eps, comDim, ipmSet,kOnly=False):
         minimumGamma = min_gamma_cols[has_any]  # min γ for each found k
         foundGammaBorder[foundK] = minimumGamma
         kLeftToFind[foundK] = False
+        loopNr += 1
+        if loopNr < 1:
+            checkingGamma += gammaStepSize
+        else:
+            gammaCap = checkingGamma[-1]
+            foundGammaBorder[kLeftToFind] = gammaCap
+            break
+    # ensure the borders are not waaaaay to big ~ 300 0000 elements for the total matrix
 
-        checkingGamma += gammaStepSize
+    # if comDim == 3:
+    #     gammaUB = round(np.mean(foundGammaBorder) + np.sqrt(np.mean(np.square(foundGammaBorder - np.mean(foundGammaBorder)))))
+    #     foundGammaBorder = np.minimum(foundGammaBorder, gammaUB)
+    # elif comDim == 4:
+    #     gammaUB = round(np.mean(foundGammaBorder) + 2*np.sqrt(np.mean(np.square(foundGammaBorder - np.mean(foundGammaBorder)))))
+    #     foundGammaBorder = np.minimum(foundGammaBorder, gammaUB)
     return foundKBorder, foundGammaBorder
 
 
@@ -2916,24 +2946,49 @@ if __name__ == '__main__':
                     3:"uniformCoordinateWise",4:"compareToLowerBound"}
     allTestTypesPD = {0:"trulyUniformOnSphere",1: "uniformCoordinateWise", 2: "compareToLowerBound"}
     testDim = 3
-    testRadArray = np.linspace(1.0/26,1,25)
+    testRadArray = np.linspace(23.0/26,1,3,endpoint=False)
     testThetaArray = np.pi-np.linspace(0,np.pi,21,endpoint=True)
 
 
-    # testRad = 0.0
-    # testTheta = 0.0
-    nrOfTests = 1
-    bqpType = allTestTypesPD[0]
-    for testRad in testRadArray:
-        for testTheta in testThetaArray:
-            testArgsPD = {bqpType: True, "eps": 0.03, "epsDual": 0.03, "sizeOfBQPSet": 6, "setAmount": 1,
-                          "setLinks": 1,
-                            "improvementWithFacets": True}
-            runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    testRad = 0.0
+    testTheta = 0.0
+    nrOfTests = 3
+    bqpType = allTestTypesPD[2]
+    # for testRad in testRadArray:
+    #     for testTheta in testThetaArray:
+    #         testArgsPD = {bqpType: True, "eps": 0.003, "epsDual": 0.003, "sizeOfBQPSet": 12, "setAmount": 1,
+    #                       "setLinks": 1,
+    #                         "improvementWithFacets": False}
+    #         runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
     #
-    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
-    #                 "improvementWithFacets": True}
-    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.001,"sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+                    "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    testDim = 4
+    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    testDim = 5
+    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    testDim = 6
+    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    testDim = 7
+    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    testDim = 8
+    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+                  "improvementWithFacets": False}
+    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
     #
     # bqpType = allTestTypesPD[0]
     # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
