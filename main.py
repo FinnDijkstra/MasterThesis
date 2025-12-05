@@ -1949,7 +1949,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
     # Start making point sets for simplest set with inner product t
     pointSet1 = np.zeros((2, dim), dtype=np.complex128)
     pointSet1[0, 0] = 1
-    pointSet1[1, 1] = forbiddenZ
+    pointSet1[1, 0] = forbiddenZ
     pointSet1[1, 1] = np.sqrt(1 - forbiddenRad ** 2)
     pointSetsForModel = [pointSet1]
 
