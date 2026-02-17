@@ -170,6 +170,7 @@ def plotDubbel3dMethod(r,theta, x, y, z, zlabel="f(z)",fullZLabel="f(z)"):
             path_effects.withStroke(linewidth=3, foreground='black')
         ])
     ax.grid(alpha=0.525)
+    ax.tick_params(axis="both", which="both", color="k")
     cbar = fig.colorbar(contourInfo,ax=ax,pad=0.10,shrink=0.8)
     cbar.set_label(fullZLabel)
     # plt.tight_layout()
@@ -400,7 +401,7 @@ def groupedPolarPlot(rMesh,thetaMesh,bestGammaArray,bestKArray,gammaSteps,kSteps
         gammaLeft = gammaLeft^gammaThisValMask
     listPerGamma.append(gammaLeft)
     # Fill regions
-    minInt = 0.6
+    minInt = 0.55
     counteredThisPoint = np.zeros_like(thetaMesh,dtype=bool)
 
     fullColours = {}

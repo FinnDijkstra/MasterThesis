@@ -67,12 +67,13 @@ def listMatrixDot(listOfMatrices):
     return [comMatrixDot(curMatrix) for curMatrix in listOfMatrices]
 
 
-def stitchSets(arrayList, setLinks, keepInitials=True):
+def stitchSets(arrayList, setLinks, keepInitials=True, combUnion=True):
     dimArray = arrayList[0].shape[1]
     sampleUnitary = unitary_group.rvs(dimArray)
+    numArrays = len(arrayList)
     if setLinks == 1:
         combedArrays = arrayList
-    elif len(arrayList) <= setLinks:
+    elif numArrays <= setLinks:
         if keepInitials:
             combedArrays = [np.concat([ar for ar in arrayList])] #.dot(np.conjugate(unitary_group.rvs(dimArray)))
         else:
@@ -80,13 +81,29 @@ def stitchSets(arrayList, setLinks, keepInitials=True):
                                                                       for setIdx in range(len(arrayList))])]
     else:
         combedArrays = []
-        if keepInitials:
-            for comb in combinations(range(len(arrayList)), setLinks):
-                combedArrays.append(np.concat([arrayList[combIdx] for combIdx in comb])) #.dot(np.conjugate(unitary_group.rvs(dimArray)))
+        if combUnion:
+            if keepInitials:
+                for comb in combinations(range(len(arrayList)), setLinks):
+                    combedArrays.append(np.concat([arrayList[combIdx] for combIdx in comb])) #.dot(np.conjugate(unitary_group.rvs(dimArray)))
+            else:
+                for comb in combinations(range(len(arrayList)), setLinks):
+                    combedArrays.append(np.concat([arrayList[0][:2]] +
+                                                       [arrayList[combIdx][2:] for combIdx in comb]))
         else:
-            for comb in combinations(range(len(arrayList)), setLinks):
-                combedArrays.append(np.concat([arrayList[0][:2]] +
-                                                   [arrayList[combIdx][2:] for combIdx in comb]))
+            for start_idx in range(0, numArrays, setLinks):
+                group_indices = range(start_idx,
+                                      min(start_idx + setLinks, numArrays))
+                if keepInitials:
+                    # Just concatenate the arrays in this group
+                    combedArrays.append(
+                        np.concat([arrayList[i] for i in group_indices])
+                    )
+                else:
+                    # Keep the first 2 rows of V_1, add rows 2: from each V_i in this group
+                    combedArrays.append(
+                        np.concat([arrayList[0][:2]] +
+                                  [arrayList[i][2:] for i in group_indices])
+                    )
     return combedArrays
 
 
@@ -715,7 +732,7 @@ def borderedPrimal(forbiddenRadius, forbiddenAngle, complexDimension, gammaBorde
         setWeightConstr = []
         # Build per–point-set pieces
         largestSet = 0
-        nInit = listOfPointSets[0].shape[0]
+        nInit = 1 # listOfPointSets[0].shape[0]
         charM = characteristicMatrix(nInit)
         nrSets = charM.shape[1]
         for ps_idx in range(nrOfPointSets):
@@ -1260,7 +1277,7 @@ def facetInequalityBQPGammaless(dim,startingPointset, startingCoefficients,
 
             # relativeSizeV1 = np.sqrt(np.sum(np.abs(facetIneqs[facetIdx])))
             relativeSizeV1 = 1
-            currentCutOff = -0.3 * (-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2))
+            currentCutOff = -0.3 * (-1/np.log2(nrOfFacets+2)+1/np.log2(facetNr+2))/(1.0+startingFacet)
 
             succesBase = False
             succesRand = False
@@ -1951,18 +1968,19 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
     pointSet1[0, 0] = 1
     pointSet1[1, 0] = forbiddenZ
     pointSet1[1, 1] = np.sqrt(1 - forbiddenRad ** 2)
-    pointSetsForModel = [pointSet1]
+    # pointSetsForModel = [pointSet1]
+    pointSetsForModel = []
 
     # Run once to get a baseline
     if forbiddenRad < 1:
-        uniqueValueArray = np.array([forbiddenZ])
+        uniqueValueArray = np.clip(np.array([forbiddenZ]),0.5,0.95)
     else:
-        uniqueValueArray = np.array([0.99])
+        uniqueValueArray = np.array([0.95])
     curKBorder, curGammaBorder = borderBasedOnEpsilon(eps, dim, uniqueValueArray, allKOnly)
     totalPolynomials = np.sum(curGammaBorder)
     (coefsThetav0, bestObjVal,
      unscaledcoefsThetav0,curErrorTerm) = borderedPrimal(forbiddenRad, forbiddenTheta, dim, curGammaBorder, curKBorder,
-                                                                    listOfPointSets=pointSetsForModel,kOnly=allKOnly)
+                                                                    listOfPointSets=[],kOnly=allKOnly)
     # Disk poly from baseline
     # diskPolyBQPLess = DiskCombi(dim-2,unscaledcoefsThetav0)
     print(f"Base obj value: {bestObjVal}")
@@ -2006,7 +2024,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
             (foundBool, ineqPointset,
              facetStart) = facetInequalityBQPGammaless(dim, startingPS,
                                                        unscaledCoefsCurTheta, errorFuncCoef=curErrorTerm,
-                                                       startingFacet=facetStart, stopEarly=True,
+                                                       startingFacet=setIdx, stopEarly=True,
                                                        compareToLowerBound=compareToLowerBound)
             if foundBool:
                 psForModel = ineqPointset
@@ -2015,7 +2033,7 @@ def primalStartDualFinish(dim, forbiddenRad=0, forbiddenTheta=0, eps=0.001, epsD
         else:
             psForModel = startingPS
         fullPointSets.append(psForModel)
-        pointSetsForModel = stitchSets(fullPointSets, setLinks)
+        pointSetsForModel = stitchSets(fullPointSets, setLinks,combUnion=True)
         # ipmsForModel = [curPS.dot(curPS.conj().T) for curPS in pointSetsForModel]
         ipmsForModel = listMatrixDot(pointSetsForModel)
         uniqueValueArray = np.concat(ipmsForModel, axis=None)
@@ -2309,6 +2327,36 @@ def runTestsPDNoSave(testComplexDimension, forbiddenRadius, forbiddenAngle, test
     return results
 
 
+def findBase(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
+    """
+    Run testAmount tests for a single (radius, angle) combination.
+
+    Returns a list of dicts with the per-test results.
+    """
+    results = []
+    eps = argsTest["epsDual"]
+    uniqueValueArray = np.clip(np.array([forbiddenRadius]), 0.5, 0.95)*np.exp(1j * forbiddenAngle)
+    curKBorder, curGammaBorder = borderBasedOnEpsilon(eps, testComplexDimension, uniqueValueArray, False)
+    for testNr in range(testAmount):
+        objVal = concatDual(forbiddenRadius,forbiddenAngle,testComplexDimension,curKBorder,curGammaBorder,nrOfPointSets=0)
+
+        # obj_vals = testResult["objective values"]
+        # init_primal = obj_vals["initPrimal"]
+        # dual_obj = obj_vals["Dual objective"]
+
+        results.append({
+            "radius": forbiddenRadius,
+            "theta": forbiddenAngle,
+            "test_nr": testNr,
+            "initPrimal": objVal,
+            "dualObj": objVal,
+            "testType": testType,
+            "dim": testComplexDimension,
+        })
+
+    return results
+
+
 def runTestsPD(testComplexDimension, forbiddenRadius, forbiddenAngle, testAmount, argsTest, testType):
     facetImprBool = argsTest["improvementWithFacets"]
     if facetImprBool:
@@ -2394,7 +2442,7 @@ def run_PD_grid_to_excel(
                 "improvementWithFacets": improvementWithFacets,
             }
 
-            cur_results = runTestsPDNoSave(
+            cur_results = findBase(
                                                 testDim,
                                                 testRad,
                                                 testTheta,
@@ -3044,7 +3092,7 @@ def borderBasedOnEpsilon(eps, comDim, ipmSet,kOnly=False):
     kLeftToFind = np.ones_like(foundKBorder,dtype=np.bool)
     kLeftToFind[-1] = False
     # curGammaIdx = 0
-    gammaStepSize = math.ceil(20000.0/maxK)
+    gammaStepSize = math.ceil(10000.0/maxK)
     checkingGamma = np.arange(gammaStepSize)
     loopNr = 0
     while np.any(kLeftToFind):
@@ -3093,17 +3141,27 @@ def quickJumpNavigator():
     # readPointsetAndRunDualWith(testPath, testKey,
     #                             overridingSetting={"setLinks":2})
     # gc.disable()
+
+    # for testRad in testRadArray:
+    #     for testTheta in testThetaArray:
+    #         testArgsPD = {bqpType: True, "eps": 0.003, "epsDual": 0.003, "sizeOfBQPSet": 12, "setAmount": 1,
+    #                       "setLinks": 1,
+    #                         "improvementWithFacets": False}
+    #         runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
 if __name__ == '__main__':
 
 
     allTestTypesPD = {0:"trulyUniformOnSphere",1: "uniformCoordinateWise", 2: "compareToLowerBound"}
-    testDim = 5
-    testRadArray = np.linspace(1.0/6,1,5,endpoint=False)
-    testThetaArray = np.pi-np.linspace(0,np.pi,6,endpoint=True)
 
+    # testRadArray = np.linspace(1.0/3,1,3,endpoint=False)
+    # testThetaArray = np.pi-np.linspace(0,np.pi,3,endpoint=True)
+    testRadArray = np.linspace(1.0 / 62, 62.0 / 62, 61, endpoint=False)
+    testThetaArray = np.pi - np.linspace(0, np.pi, 60, endpoint=True)
 
 
     nrOfTests = 2
+
+    testDim = 4
     bqpType = allTestTypesPD[0]
     run_PD_grid_to_excel(
         testDim=testDim,
@@ -3111,51 +3169,102 @@ if __name__ == '__main__':
         testThetaArray=testThetaArray,
         nrOfTests=nrOfTests,
         bqpType=bqpType,
-        eps=0.003,
-        epsDual=0.003,
+        eps=0.001,
+        epsDual=0.001,
         sizeOfBQPSet=6,
-        setAmount=1,
+        setAmount=0,
         setLinks=1,
         improvementWithFacets=False,
         output_dir="TestResults",
     )
-    # for testRad in testRadArray:
-    #     for testTheta in testThetaArray:
-    #         testArgsPD = {bqpType: True, "eps": 0.003, "epsDual": 0.003, "sizeOfBQPSet": 12, "setAmount": 1,
-    #                       "setLinks": 1,
-    #                         "improvementWithFacets": False}
-    #         runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
 
-    testRad = 0.0
-    testTheta = 0.0
-    testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.001,"sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
-                    "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
 
-    testDim = 4
-    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
 
-    testDim = 5
-    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
 
-    testDim = 6
-    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    # testRad = 0.0
+    # testTheta = 0.0
+    # bqpType = allTestTypesPD[0]
+    # testDim = 3
+    #
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.001,"sizeOfBQPSet": 6, "setAmount": 12, "setLinks": 3,
+    #                 "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 5
+    #
+    # testArgsPD = {bqpType: True, "eps": 0.00003, "epsDual":0.00003,"sizeOfBQPSet": 6, "setAmount": 12, "setLinks": 3,
+    #                 "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 6
+    #
+    # testArgsPD = {bqpType: True, "eps": 0.00001, "epsDual":0.00001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,
+    #                 "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 7
+    #
+    # testArgsPD = {bqpType: True, "eps": 0.00001, "epsDual":0.00001,"sizeOfBQPSet": 6, "setAmount": 12, "setLinks": 3,
+    #                 "improvementWithFacets": True}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
 
-    testDim = 7
-    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
 
-    testDim = 8
-    testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
-                  "improvementWithFacets": False}
-    runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+
+    # testDim = 4
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 5
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 6
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 7
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 8
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # bqpType = allTestTypesPD[1]
+    # testDim = 3
+    # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual": 0.001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 4
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 5
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 6
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 7
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
+    #
+    # testDim = 8
+    # testArgsPD = {bqpType: True, "eps": 0.0001, "epsDual": 0.0001, "sizeOfBQPSet": 18, "setAmount": 4, "setLinks": 1,
+    #               "improvementWithFacets": False}
+    # runTestsPD(testDim, testRad, testTheta, nrOfTests, testArgsPD, bqpType)
     #
     # bqpType = allTestTypesPD[0]
     # testArgsPD = {bqpType: True, "eps": 0.001, "epsDual":0.0001,"sizeOfBQPSet": 6, "setAmount": 4, "setLinks": 3,

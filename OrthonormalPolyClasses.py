@@ -371,13 +371,13 @@ if __name__ == "__main__":
         yMesh = sinMesh*rMesh
         coefArray = np.ones((50, 20)) / 4000
         complexDimension = 10
-        totalDisk = DiskCombi(complexDimension-2, coefArray)
+        totalDisk = DiskCombi(complexDimension-2, coefArray )
         # bestGamma, bestK = totalDisk.findMinimalParams(rGrid, thetaGrid)
         bestGamma, bestK, minimalValues = totalDisk.findMinimalParams(r2Grid,thetaGrid)
         # plot2dCharts.groupedPolarPlot(rMesh, thetaMesh, bestGamma, bestK, 5, 5)
         graphTitle = "Parameters for best disk polynomial\n" + fr"in $\mathbb{{C}}^{{{complexDimension}}}$ "
         plot2dCharts.groupedPolarPlot(r2Mesh,theta2Mesh,bestGamma,bestK,10,10,graphTitle,
-                                      legendBool=False, minVals = minimalValues, plot3dBool = True, comDim=complexDimension)
+                                      legendBool=False, minVals = minimalValues, plot3dBool = False, comDim=complexDimension)
         bestGammaMask = (bestGamma>0)
         bestKMask = (bestK >0)
         print(np.sum(bestKMask*bestGammaMask))
