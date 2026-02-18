@@ -514,6 +514,173 @@ class CircleSetAndCharacteristic(Scene):
         self.wait(0.5)
 
 
+
+class RotateGraphTo3D(ThreeDScene):
+    def chi(self, theta: float) -> int:
+        # Example set: in-set iff ((theta + pi/4) mod pi) < pi/2
+        t = (theta + np.pi / 4) % np.pi
+        return int(t < (np.pi / 2))
+
+    def construct(self):
+        # This scene is intended to be appended after your previous one.
+        # It starts by recreating the *final state* of the right-hand plot,
+        # but with the "dots / theta label / angle indicator" removed.
+
+        # --- 2D graph state (front-facing), kept as a flat object initially ---
+        right_anchor = RIGHT * 3.6
+
+        axes2d = Axes(
+            x_range=[0, TAU, np.pi / 2],
+            y_range=[-0.2, 1.2, 1],
+            x_length=6.0,
+            y_length=2.8,
+            tips=False,
+        ).move_to(right_anchor)
+
+        # Static tick labels on x (will fade out before turning 3D)
+        x_ticks = [np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi]
+        x_tick_labels_2d = VGroup(
+            MathTex(r"\frac{\pi}{2}").scale(0.65),
+            MathTex(r"\pi").scale(0.65),
+            MathTex(r"\frac{3\pi}{2}").scale(0.65),
+            MathTex(r"2\pi").scale(0.65),
+        )
+        for x, lab in zip(x_ticks, x_tick_labels_2d):
+            lab.next_to(axes2d.c2p(x, 0), DOWN, buff=0.15)
+
+        y_tick_labels_2d = VGroup(
+            MathTex("0").scale(0.7).next_to(axes2d.c2p(0, 0), LEFT, buff=0.15),
+            MathTex("1").scale(0.7).next_to(axes2d.c2p(0, 1), LEFT, buff=0.15),
+        )
+
+        x_label_2d = MathTex(r"\theta").scale(0.8).next_to(axes2d.x_axis, DOWN, buff=0.8)
+        y_label_2d = MathTex(r"\chi(\theta)").scale(0.8).next_to(axes2d.y_axis, LEFT, buff=0.65)
+
+        y0_line = axes2d.get_horizontal_line(axes2d.c2p(0, 0)).set_stroke(GREY_C, 1)
+        y1_line = axes2d.get_horizontal_line(axes2d.c2p(0, 1)).set_stroke(GREY_C, 1)
+
+        # Recreate the final step graph as a single VMobject (no updater needed here)
+        step_path = VMobject().set_stroke(colourList["graph"], 4)
+        pts = [axes2d.c2p(0, self.chi(0))]
+        last_v = self.chi(0)
+
+        # Build a piecewise-constant path with vertical jumps at membership flips
+        # (dense sampling; fine for visual continuity)
+        samples = 600
+        for k in range(1, samples + 1):
+            t = TAU * k / samples
+            v = self.chi(t)
+            if v != last_v:
+                pts.append(axes2d.c2p(t, last_v))  # horizontal to the jump
+                pts.append(axes2d.c2p(t, v))       # vertical jump
+            else:
+                pts.append(axes2d.c2p(t, v))
+            last_v = v
+
+        step_path.set_points_as_corners(pts)
+
+        graph2d_group = VGroup(
+            axes2d, y0_line, y1_line, x_tick_labels_2d, y_tick_labels_2d, x_label_2d, y_label_2d, step_path
+        )
+
+        self.add(graph2d_group)
+
+        # --- Fade out the 2D labels/ticks (as requested) ---
+        fade_out_2d_text = VGroup(x_tick_labels_2d, y_tick_labels_2d, x_label_2d, y_label_2d)
+        self.play(FadeOut(fade_out_2d_text), run_time=0.8)
+
+        # --- Introduce 3D axes (initially aligned front-on) ---
+        # Coordinate mapping:
+        # x = theta in [0, 2pi]
+        # y = phi   in [0, 2pi] (will extend "into the screen" after rotation)
+        # z = chi(theta)chi(phi) in {0,1} (but for now we just show the z axis scale)
+        axes3d = ThreeDAxes(
+            x_range=[0, TAU, np.pi / 2],
+            y_range=[0, TAU, np.pi / 2],
+            z_range=[0, 1, 1],
+            x_length=6.0,
+            y_length=3.5,
+            z_length=2.8,
+        )
+        axes3d.move_to(right_anchor)
+
+        # Replace the 2D axes lines with 3D axes (keep the step curve as a flat object for now)
+        # We keep y0/y1 guide lines for the moment; you can remove them later if you prefer.
+        self.play(
+            FadeOut(axes2d),
+            FadeIn(axes3d),
+            run_time=1.0
+        )
+
+        # Add 3D tick labels AFTER the axes appear
+        # x ticks: pi/2, pi, 3pi/2, 2pi
+        x_tick_labels_3d = VGroup(
+            MathTex(r"\frac{\pi}{2}").scale(0.6),
+            MathTex(r"\pi").scale(0.6),
+            MathTex(r"\frac{3\pi}{2}").scale(0.6),
+            MathTex(r"2\pi").scale(0.6),
+        )
+        for x, lab in zip(x_ticks, x_tick_labels_3d):
+            lab.move_to(axes3d.c2p(x, 0, 0) + DOWN * 0.25)
+
+        # y ticks: same labels along phi axis
+        y_tick_labels_3d = VGroup(
+            MathTex(r"\frac{\pi}{2}").scale(0.6),
+            MathTex(r"\pi").scale(0.6),
+            MathTex(r"\frac{3\pi}{2}").scale(0.6),
+            MathTex(r"2\pi").scale(0.6),
+        )
+        for y, lab in zip(x_ticks, y_tick_labels_3d):
+            lab.move_to(axes3d.c2p(0, y, 0) + LEFT * 0.25)
+
+        # z ticks: 0 and 1 on left of z axis
+        z_tick_labels_3d = VGroup(
+            MathTex("0").scale(0.65),
+            MathTex("1").scale(0.65),
+        )
+        z_tick_labels_3d[0].move_to(axes3d.c2p(0, 0, 0) + LEFT * 0.25)
+        z_tick_labels_3d[1].move_to(axes3d.c2p(0, 0, 1) + LEFT * 0.25)
+
+        # Axis labels
+        x_label_3d = MathTex(r"\theta").scale(0.75).move_to(axes3d.c2p(TAU, 0, 0) + DOWN * 0.35)
+        y_label_3d = MathTex(r"\phi").scale(0.75).move_to(axes3d.c2p(0, TAU, 0) + LEFT * 0.35)
+        z_label_3d = MathTex(r"\chi(\theta)\chi(\phi)").scale(0.7).move_to(
+            axes3d.c2p(0, 0, 1.1) + LEFT * 0.9
+        )
+
+        self.add_fixed_in_frame_mobjects(x_tick_labels_3d, y_tick_labels_3d, z_tick_labels_3d,
+                                         x_label_3d, y_label_3d, z_label_3d)
+        # Note: fixed-in-frame avoids labels rotating with the camera.
+        # If you *do* want them to rotate with the axes, remove add_fixed_in_frame_mobjects
+        # and self.add(...) them normally.
+
+        self.play(
+            FadeIn(VGroup(x_tick_labels_3d, y_tick_labels_3d, z_tick_labels_3d, x_label_3d, y_label_3d, z_label_3d)),
+            run_time=0.8
+        )
+
+        # --- Camera rotation to "reveal" the hidden phi axis while keeping z visually on the left ---
+        # Start from a front-on view and rotate around the vertical axis.
+        self.set_camera_orientation(phi=70 * DEGREES, theta=-90 * DEGREES)
+
+        # The 2D step curve currently lives in screen space; move it into 3D space at phi=0, z=chi(theta)
+        # We'll re-embed it as a ParametricFunction in 3D for cleaner behavior during rotation.
+        step3d = ParametricFunction(
+            lambda t: axes3d.c2p(t, 0, self.chi(t)),
+            t_range=[0, TAU],
+        ).set_stroke(BLUE, 4)
+
+        self.play(ReplacementTransform(step_path, step3d), run_time=0.8)
+
+        # Rotate to reveal y=phi going "back"
+        self.move_camera(phi=65 * DEGREES, theta=-35 * DEGREES, run_time=2.0)
+
+        self.wait(0.5)
+
+
+
+
+
 colourList = {
     "inSet":PURE_GREEN,
     "outSet":PURE_RED,
